@@ -556,9 +556,13 @@ function setupLegendFilter() {
       matchEdges.removeClass("faded");
       matchNodes.removeClass("faded");
     };
-    // ---- Export: download the updated xlsx ----
-    document.getElementById('export-btn').addEventListener('click', () => {
-    // This endpoint returns the file as a download; the page stays put.
-    window.location = '/api/export';
   });
 }
+
+
+// -------- 8. Export the updated xlsx --------
+// NOTE: this lives at the TOP LEVEL of the file (not inside any function).
+document.getElementById('export-btn').addEventListener('click', () => {
+  // This endpoint returns the file as a download; the page stays put.
+  window.location = '/api/export';
+});
