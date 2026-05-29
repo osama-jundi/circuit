@@ -49,25 +49,21 @@ fetch("/api/graph")
       container: $("cy"),
       elements: [...data.elements.nodes, ...data.elements.edges],
       style: graphStyle(),
-      layout: {
-        name: "dagre",
-        rankDir: "TB",
-        nodeSep: 35,
-        rankSep: 95,
-        edgeSep: 14,
-      },
+      layout: { name: "preset" },   // positions computed in applySldLayout()
       minZoom: 0.1,
       maxZoom: 3,
     });
 
-    // Fit the graph once dagre finishes
-    cy.on("layoutstop", () => {
-      cy.fit(undefined, 40);
-      setTimeout(() => cy.fit(undefined, 40), 200);
-    });
+    buildSections(cy);                       // tag boards/leaves + edge direction
+    applySldLayout(cy);                      // auto starting layout
+    cy.nodes("[isBoard = 0]").ungrabify();   // only busbars are draggable; loads follow
+    setupDragging(cy);                       // drag a bus -> its loads move with it
+    restoreLayout(cy);                       // apply saved 2D arrangement if any
+    setupLayoutControls(cy);                 // Reset button + drag hint in the legend
+    cy.fit(undefined, 30);
 
     // ---- Wire up interactions ----
-    cy.on("tap", "node", e => openPanelDetails(e.target.id()));
+    cy.on("tap", "node[!isGroup]", e => openPanelDetails(e.target.id()));
     cy.on("tap", "edge", e => promptEdgeStatus(e.target));
 
     // Click on empty canvas = close panel + clear highlight
@@ -97,97 +93,92 @@ fetch("/api/graph")
 // -------- 3. Styling --------
 function graphStyle() {
   return [
-    // ---- Nodes (panels) ----
+    // ---- Busbar boards: thin colored rail, name below ----
     {
-      selector: "node",
+      selector: "node[isBoard = 1]",
+      style: {
+        "shape": "rectangle",
+        "background-color": "data(bg)",
+        "background-opacity": 1,
+        "border-color": "#1f2d3a",
+        "border-width": 1,
+        "label": "data(label)",
+        "font-size": "10px",
+        "font-weight": "bold",
+        "text-valign": "bottom",
+        "text-margin-y": 4,
+        "text-halign": "center",
+        "color": "#10202e",
+        "width": "data(barW)",
+        "height": "data(barH)",
+        "padding": "8px",
+        "text-max-width": "700px",
+        "text-wrap": "none",
+      }
+    },
+    // ---- Leaf loads: white box above the bar ----
+    {
+      selector: "node[isBoard = 0]",
       style: {
         "shape": "round-rectangle",
         "background-color": "#ffffff",
-        "border-color": "#1e3a5f",
-        "border-width": 1.5,
+        "border-color": "#5b6b7b",
+        "border-width": 1,
         "label": "data(label)",
+        "font-size": "8px",
+        "text-wrap": "wrap",
+        "text-max-width": "66px",
         "text-valign": "center",
         "text-halign": "center",
-        "text-wrap": "wrap",
-        "text-max-width": "130px",
-        "font-size": "10px",
-        "font-family": "-apple-system, Segoe UI, sans-serif",
-        "color": "#1e3a5f",
-        "width": "140px",
-        "height": "36px",
-        "padding": "6px",
+        "color": "#2a2a2a",
+        "width": "76px",
+        "height": "48px",
       }
     },
-    // Roots (transformers, main incomers) stand out
+    // Leaf type tints (kept from before, applied on top of white)
+    { selector: 'node[isBoard = 0][type = "CAP"]', style: { "background-color": "#fde0e9" } },
+    // ---- Section groups: invisible (we color the rail itself) ----
     {
-      selector: "node[level = 0]",
-      style: {
-        "background-color": "#e7eef7",
-        "border-color": "#1e3a5f",
-        "border-width": 2.5,
-        "font-weight": "bold",
-        "height": "42px",
-      }
-    },
-    // Transformers - blue tinge
-    {
-      selector: 'node[type = "TX"]',
-      style: { "background-color": "#dbe9f7", "border-color": "#1e4f8a" }
-    },
-    // MDBs - light yellow
-    {
-      selector: 'node[type = "MDB"]',
-      style: { "background-color": "#fff3d6" }
-    },
-    // SMDBs - light purple
-    {
-      selector: 'node[type = "SMDB"]',
-      style: { "background-color": "#ede4f7" }
-    },
-    // Capacitor banks - pink
-    {
-      selector: 'node[type = "CAP"]',
-      style: { "background-color": "#fde0e9" }
-    },
-    // End loads - light grey
-    {
-      selector: 'node[type = "LOAD"]',
-      style: { "background-color": "#f0f1f4" }
+      selector: "node[?isGroup]",
+      style: { "background-opacity": 0, "border-opacity": 0, "label": "" }
     },
 
-    // ---- Edges (feeders) ----
+    // ---- Feeder stubs to loads (vertical, up) ----
     {
-      selector: "edge",
+      selector: "edge[tgtBoard = 0]",
       style: {
-        "width": 2.2,
+        "width": 1.6,
+        "line-color": "#8795a3",
+        "curve-style": "taxi",
+        "taxi-direction": "upward",
+        "taxi-turn": "30%",
+        "target-arrow-shape": "none",
+      }
+    },
+    // Color the stub by status too (overrides grey)
+    { selector: 'edge[tgtBoard = 0]', style: { "line-color": "data(color)" } },
+    {
+      selector: 'edge[tgtBoard = 0][status = "Not Issued"]',
+      style: { "line-style": "dashed", "line-dash-pattern": [5, 4] }
+    },
+    // ---- Inter-board cables (down) ----
+    {
+      selector: "edge[tgtBoard = 1]",
+      style: {
+        "width": 2.4,
         "line-color": "data(color)",
-        "target-arrow-color": "data(color)",
+        "curve-style": "taxi",
+        "taxi-direction": "downward",
+        "taxi-turn": "10px",
         "target-arrow-shape": "triangle",
-        "arrow-scale": 0.9,
-        "curve-style": "bezier",
-        "control-point-step-size": 40,    // separation for multi-feeders
+        "target-arrow-color": "data(color)",
+        "arrow-scale": 0.8,
+        "target-endpoint": "0% -50%",
       }
     },
     {
-      selector: 'edge[status = "Not Issued"]',
-      style: {
-        "line-style": "dashed",
-        "line-dash-pattern": [6, 4],
-      }
-    },
-
-    // ---- Highlighted (from search or details popup) ----
-    {
-      selector: "node.highlighted",
-      style: {
-        "border-color": "#b42318",
-        "border-width": 4,
-        "background-blacken": -0.05,
-      }
-    },
-    {
-      selector: "edge.highlighted",
-      style: { "width": 4 }
+      selector: 'edge[tgtBoard = 1][status = "Not Issued"]',
+      style: { "line-style": "dashed", "line-dash-pattern": [6, 4] }
     },
 
     // ---- Faded (when filter or focus is on) ----
@@ -566,3 +557,170 @@ document.getElementById('export-btn').addEventListener('click', () => {
   // This endpoint returns the file as a download; the page stays put.
   window.location = '/api/export';
 });
+
+// ===================================================================
+//  SECTIONS + BUSBAR LAYOUT  (the "look like the PDF" stage)
+// ===================================================================
+const SECTION_PALETTE = [
+  "#F8CCE0","#BFE6EC","#C9E8C2","#FCE3B4","#D6CCEF","#F7C9C2","#CDE7F0",
+  "#E6D7B8","#D9EAD3","#F4CFE7","#C2E0DA","#EAD1B0","#D0D9F0","#F0D0C0"
+];
+
+function isBoardNode(node) { return node.outgoers("node").length > 0; }
+
+function buildSections(cy) {
+  // tag boards (feed others) vs leaves; color each board rail. No compound groups
+  // so busbars drag freely in 2D.
+  cy.nodes().forEach(n => n.data("isBoard", isBoardNode(n) ? 1 : 0));
+  cy.nodes().filter(isBoardNode).forEach((b, i) =>
+    b.data("bg", SECTION_PALETTE[i % SECTION_PALETTE.length]));
+  cy.edges().forEach(e => e.data("tgtBoard", e.target().data("isBoard") === 1 ? 1 : 0));
+}
+
+function applySldLayout(cy) {
+  const LEAF_W = 72, LEAF_H = 44, HGAP = 12, VGAP = 12, STUB = 24;
+  const BASE_BAR = 14, NAME_H = 18, ROW_GAP = 56, MIN_BAR = 160, LEFT = 120;
+
+  const kids       = id => cy.getElementById(id).outgoers("node").map(n => n.id());
+  const isBd       = id => cy.getElementById(id).data("isBoard") === 1;
+  const leaves     = id => kids(id).filter(k => !isBd(k));
+  const boardKids  = id => kids(id).filter(isBd);
+
+  const gridDims = n => {
+    if (!n) return { cols: 0, rows: 0, w: 0, h: 0 };
+    const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+    return { cols, rows, w: cols * LEAF_W + (cols - 1) * HGAP, h: rows * LEAF_H + (rows - 1) * VGAP };
+  };
+  const barWidth  = id => Math.max(MIN_BAR, gridDims(leaves(id).length).w);
+  const barHeight = id => BASE_BAR + Math.min(20, kids(id).length * 1.4);
+
+  const boards = cy.nodes("[isBoard = 1]").map(n => n.id());
+  const roots  = boards.filter(b => cy.getElementById(b).incomers("node").length === 0);
+
+  const order = [], seen = new Set(), q = [...roots];
+  while (q.length) {
+    const b = q.shift();
+    if (seen.has(b)) continue;
+    seen.add(b); order.push(b);
+    boardKids(b).forEach(c => q.push(c));
+  }
+  boards.forEach(b => { if (!seen.has(b)) { seen.add(b); order.push(b); } });
+
+  const pos = {};
+  let curY = 30;
+  order.forEach(id => {
+    const lv = leaves(id), bw = barWidth(id), bh = barHeight(id), g = gridDims(lv.length);
+    cy.getElementById(id).data("barW", bw);
+    cy.getElementById(id).data("barH", bh);
+    const cx = LEFT + bw / 2;
+    if (lv.length) {                          // loads in a square-ish block, centered over the bus
+      const sx = cx - g.w / 2 + LEAF_W / 2, sy = curY + LEAF_H / 2;
+      lv.forEach((lf, i) => {
+        const r = Math.floor(i / g.cols), c = i % g.cols;
+        pos[lf] = { x: sx + c * (LEAF_W + HGAP), y: sy + r * (LEAF_H + VGAP) };
+      });
+    }
+    const barY = curY + g.h + STUB + bh / 2;
+    pos[id] = { x: cx, y: barY };
+    curY = barY + bh / 2 + NAME_H + ROW_GAP + LEAF_H;
+  });
+  cy.nodes("[!isGroup]").forEach(n => { if (pos[n.id()]) n.position(pos[n.id()]); });
+
+  // #1: spread inter-board cables along the SOURCE bus (not all from one point)
+  boards.forEach(src => {
+    const oe = cy.getElementById(src).outgoers("edge").filter(e => e.data("tgtBoard") === 1);
+    const k = oe.length, bw = cy.getElementById(src).data("barW");
+    oe.forEach((e, i) => e.style({ "source-endpoint": (bw * (i + 0.5) / k - bw / 2) + "px 50%" }));
+  });
+
+  // fan out multi-feeders (same source + target) into separate stubs
+  const groups = {};
+  cy.edges("[tgtBoard = 0]").forEach(e => {
+    const key = e.source().id() + ">>" + e.target().id();
+    (groups[key] = groups[key] || []).push(e);
+  });
+  Object.values(groups).forEach(g => {
+    if (g.length > 1) g.forEach((e, i) => {
+      const off = (i - (g.length - 1) / 2) * 26;
+      e.style({ "target-endpoint": off + "px -50%", "source-endpoint": off + "px 50%" });
+    });
+  });
+}
+
+// ===================================================================
+//  DRAGGABLE BUSBARS + SAVED 2D ARRANGEMENT
+// ===================================================================
+const LAYOUT_KEY = "nhm_sld_layout_v1";
+
+function setupDragging(cy) {
+  cy.on("grab", "node[isBoard = 1]", e => {
+    const b = e.target, bp = b.position();
+    // remember each load's offset relative to the bus at grab time
+    const offs = b.outgoers("node").filter(n => n.data("isBoard") === 0)
+      .map(n => ({ node: n, dx: n.position().x - bp.x, dy: n.position().y - bp.y }));
+    b.scratch("_offs", offs);
+  });
+  cy.on("drag", "node[isBoard = 1]", e => {
+    const b = e.target, bp = b.position(), offs = b.scratch("_offs");
+    if (offs) offs.forEach(o => o.node.position({ x: bp.x + o.dx, y: bp.y + o.dy }));
+  });
+  cy.on("dragfree", "node[isBoard = 1]", () => saveLayout(cy));
+}
+
+function saveLayout(cy) {
+  try {
+    const ids = cy.nodes("[!isGroup]").map(n => n.id()).sort();
+    const positions = {};
+    cy.nodes("[!isGroup]").forEach(n => positions[n.id()] = n.position());
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ids, positions }));
+  } catch (e) { /* storage may be unavailable; ignore */ }
+}
+
+function restoreLayout(cy) {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    const cur = cy.nodes("[!isGroup]").map(n => n.id()).sort();
+    if (JSON.stringify(saved.ids) !== JSON.stringify(cur)) return false;   // different file
+    cy.nodes("[!isGroup]").forEach(n => {
+      const p = saved.positions[n.id()];
+      if (p) n.position(p);
+    });
+    return true;
+  } catch (e) { return false; }
+}
+
+function setupLayoutControls(cy) {
+  const legend = document.querySelector("aside.legend");
+  if (!legend || document.getElementById("reset-layout")) return;
+  const wrap = document.createElement("div");
+  wrap.style.marginTop = "18px";
+  wrap.innerHTML =
+    '<h3>LAYOUT</h3>' +
+    '<div style="font-size:12px;color:#5b6b7b;line-height:1.4;margin-bottom:8px">' +
+    'Drag a busbar to move that board (its loads follow). Your arrangement saves automatically.</div>';
+  const btn = document.createElement("button");
+  btn.id = "reset-layout";
+  btn.textContent = "Reset layout";
+  btn.style.cssText =
+    "font-size:12px;padding:6px 10px;border:1px solid #c3ccd6;border-radius:5px;background:#fff;cursor:pointer";
+  btn.onclick = () => {
+    try { localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
+    applySldLayout(cy);
+    cy.fit(undefined, 30);
+  };
+  wrap.appendChild(btn);
+
+  // #5: a bit more in the legend - what the line styles / bus color mean
+  const notes = document.createElement("div");
+  notes.style.cssText = "margin-top:16px;font-size:12px;color:#5b6b7b;line-height:1.5";
+  notes.innerHTML =
+    '<h3>NOTES</h3>' +
+    'Solid line = energized / issued<br>' +
+    'Dashed line = not issued<br>' +
+    'Colored bar = a switchboard (MDB/SMDB)<br>' +
+    'White box = a load / feeder';
+  legend.appendChild(wrap);
+  legend.appendChild(notes);
+}
