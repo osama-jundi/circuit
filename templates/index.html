@@ -294,6 +294,13 @@
       font-weight: 400;
     }
     #findings li { margin: 2px 0; }
+    .export-btn {
+    flex-shrink: 0; margin-left: 12px;
+    background: #00B050; color: white; border: none;
+    padding: 7px 14px; border-radius: 5px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.export-btn:hover { background: #009144; }
   </style>
 </head>
 <body>
@@ -303,10 +310,12 @@
   <div class="stats">
     {{ stats.panels }} panels &middot; {{ stats.feeders }} feeders
   </div>
+
   <div class="search-wrap">
     <input id="search" type="text" placeholder="Search panel or Paulos…" autocomplete="off">
     <div id="search-results" class="search-results"></div>
   </div>
+  <button id="export-btn" class="export-btn" title="Download updated xlsx">⬇ Export xlsx</button>
 </header>
 
 <details id="findings">

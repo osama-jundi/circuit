@@ -9,7 +9,9 @@ The in-memory DATA dict is the single source of truth while the server runs.
 When the user exports (Stage 3c), we'll write it back to xlsx.
 """
 
-from flask import Flask, render_template, jsonify, request, abort
+from flask import Flask, render_template, jsonify, request, abort, send_file
+import io
+from openpyxl import load_workbook
 from pathlib import Path
 import sys
 
@@ -112,7 +114,33 @@ def api_set_status(sn):
         "status": new_status,
         "color":  graph_module.STATUS_COLORS[new_status],
     })
+@app.route("/api/export")
+def api_export():
+    # Live statuses (with the user's edits), keyed by SN
+    df = DATA["_df"]
+    status_by_sn = {int(sn): st for sn, st in zip(df["SN"], df["Site status"])}
 
+    # Re-open the ORIGINAL file so all other sheets, the dropdown,
+    # the legend and all formatting stay untouched. We only overwrite
+    # the Site status cells that changed.
+    wb = load_workbook(XLSX_FILE)
+    ws = wb[SHEET_NAME]
+    hdr = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+    sn_col, st_col = hdr["SN"], hdr["Site status"]
+    for r in range(2, ws.max_row + 1):
+        sn = ws.cell(row=r, column=sn_col).value
+        if sn is not None and int(sn) in status_by_sn:
+            ws.cell(row=r, column=st_col).value = status_by_sn[int(sn)]
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="NHM_Feeders_Energization_UPDATED.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
