@@ -125,14 +125,14 @@ function graphStyle() {
         "border-color": "#5b6b7b",
         "border-width": 1,
         "label": "data(label)",
-        "font-size": "8px",
+        "font-size": "10px",
         "text-wrap": "wrap",
-        "text-max-width": "66px",
+        "text-max-width": "100px",
         "text-valign": "center",
         "text-halign": "center",
         "color": "#2a2a2a",
-        "width": "76px",
-        "height": "48px",
+        "width": "110px",
+        "height": "66px",
       }
     },
     // Leaf type tints (kept from before, applied on top of white)
@@ -578,8 +578,8 @@ function buildSections(cy) {
 }
 
 function applySldLayout(cy) {
-  const LEAF_W = 72, LEAF_H = 44, HGAP = 12, VGAP = 12, STUB = 24;
-  const BASE_BAR = 14, NAME_H = 18, ROW_GAP = 56, MIN_BAR = 160, LEFT = 120;
+  const LEAF_W = 110, LEAF_H = 66, HGAP = 22, VGAP = 22, STUB = 34;
+  const BASE_BAR = 22, NAME_H = 22, ROW_GAP = 80, MIN_BAR = 200, LEFT = 140;
 
   const kids       = id => cy.getElementById(id).outgoers("node").map(n => n.id());
   const isBd       = id => cy.getElementById(id).data("isBoard") === 1;
@@ -592,7 +592,7 @@ function applySldLayout(cy) {
     return { cols, rows, w: cols * LEAF_W + (cols - 1) * HGAP, h: rows * LEAF_H + (rows - 1) * VGAP };
   };
   const barWidth  = id => Math.max(MIN_BAR, gridDims(leaves(id).length).w);
-  const barHeight = id => BASE_BAR + Math.min(20, kids(id).length * 1.4);
+  const barHeight = id => BASE_BAR + Math.min(30, kids(id).length * 1.8);
 
   const boards = cy.nodes("[isBoard = 1]").map(n => n.id());
   const roots  = boards.filter(b => cy.getElementById(b).incomers("node").length === 0);
