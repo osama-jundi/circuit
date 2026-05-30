@@ -301,20 +301,47 @@
     font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .export-btn:hover { background: #009144; }
+.upload-btn {
+    flex-shrink: 0; margin-left: 12px;
+    background: rgba(255,255,255,0.15); color: white; border: none;
+    padding: 7px 14px; border-radius: 5px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.upload-btn:hover { background: rgba(255,255,255,0.28); }
+
+    /* Empty-state prompt shown over the map when nothing is loaded */
+    #empty-state {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: #667085;
+      max-width: 360px;
+    }
+    #empty-state h2 { margin: 0 0 8px; font-size: 18px; color: #1e3a5f; }
+    #empty-state p { margin: 0 0 16px; font-size: 13px; line-height: 1.5; }
+    #empty-state button {
+      background: #1e3a5f; color: white; border: none;
+      padding: 10px 20px; border-radius: 6px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #empty-state button:hover { background: #2a4d7a; }
   </style>
 </head>
 <body>
 
 <header>
   <h1>NHM Feeders — SLD</h1>
-  <div class="stats">
-    {{ stats.panels }} panels &middot; {{ stats.feeders }} feeders
+  <div class="stats" id="stats-text">
+    {% if stats %}{{ stats.panels }} panels &middot; {{ stats.feeders }} feeders{% else %}No file loaded{% endif %}
   </div>
 
   <div class="search-wrap">
     <input id="search" type="text" placeholder="Search panel or Paulos…" autocomplete="off">
     <div id="search-results" class="search-results"></div>
   </div>
+  <input id="upload-input" type="file" accept=".xlsx,.xlsm" style="display:none">
+  <button id="upload-btn" class="upload-btn" title="Upload an xlsx file">⬆ Upload xlsx</button>
   <button id="export-btn" class="export-btn" title="Download updated xlsx">⬇ Export xlsx</button>
 </header>
 
@@ -348,6 +375,12 @@
 
   <div id="cy">
     <div id="loading">Loading map…</div>
+    <div id="empty-state" style="display:none">
+      <h2>No file loaded</h2>
+      <p>Upload your feeders <strong>.xlsx</strong> file to build the single-line diagram.
+         It must have an "Energization" sheet with the expected columns.</p>
+      <button id="empty-upload-btn">⬆ Upload xlsx</button>
+    </div>
   </div>
 
   <aside id="details" class="details">

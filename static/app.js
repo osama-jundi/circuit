@@ -38,10 +38,25 @@ function toast(msg, isError = false) {
 }
 
 // -------- 2. Boot --------
-fetch("/api/graph")
+/** Fetch the graph data and (re)build the map. Safe to call repeatedly,
+ *  e.g. after a new file is uploaded. */
+function boot() {
+  fetch("/api/graph")
   .then(r => r.json())
   .then(data => {
     $("loading").style.display = "none";
+
+    // Nothing uploaded yet -> show the empty-state prompt and stop.
+    if (!data.loaded) {
+      showEmptyState(true);
+      return;
+    }
+    showEmptyState(false);
+    updateStatsText(data.stats);
+
+    // Rebuild from scratch if a previous map exists (re-upload).
+    if (cy) { cy.destroy(); cy = null; }
+
     STATUSES = data.statuses;
     COLORS   = data.colors;
 
@@ -88,6 +103,48 @@ fetch("/api/graph")
     $("loading").textContent = "Failed to load: " + err.message;
     console.error(err);
   });
+}
+
+function showEmptyState(show) {
+  const es = $("empty-state");
+  if (es) es.style.display = show ? "block" : "none";
+}
+
+function updateStatsText(stats) {
+  const t = $("stats-text");
+  if (t && stats) t.textContent = `${stats.panels} panels · ${stats.feeders} feeders`;
+}
+
+// -------- Upload handling --------
+function setupUpload() {
+  const input = $("upload-input");
+  const trigger = () => input.click();
+  $("upload-btn").addEventListener("click", trigger);
+  const emptyBtn = $("empty-upload-btn");
+  if (emptyBtn) emptyBtn.addEventListener("click", trigger);
+
+  input.addEventListener("change", () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    toast("Uploading " + file.name + "…");
+    fetch("/api/upload", { method: "POST", body: form })
+      .then(r => r.json().then(body => ({ ok: r.ok, body })))
+      .then(({ ok, body }) => {
+        if (!ok) { toast(body.error || "Upload failed", true); return; }
+        toast(`Loaded ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
+        $("loading").style.display = "block";
+        $("loading").textContent = "Building map…";
+        boot();
+      })
+      .catch(err => toast("Upload error: " + err.message, true))
+      .finally(() => { input.value = ""; });  // allow re-uploading same file
+  });
+}
+
+setupUpload();
+boot();
 
 
 // -------- 3. Styling --------
@@ -143,15 +200,13 @@ function graphStyle() {
       style: { "background-opacity": 0, "border-opacity": 0, "label": "" }
     },
 
-    // ---- Feeder stubs to loads (vertical, up) ----
+    // ---- Feeder stubs to loads (radiate out to the square ring) ----
     {
       selector: "edge[tgtBoard = 0]",
       style: {
         "width": 1.6,
         "line-color": "#8795a3",
-        "curve-style": "taxi",
-        "taxi-direction": "upward",
-        "taxi-turn": "30%",
+        "curve-style": "straight",
         "target-arrow-shape": "none",
       }
     },
@@ -578,25 +633,66 @@ function buildSections(cy) {
 }
 
 function applySldLayout(cy) {
-  const LEAF_W = 110, LEAF_H = 66, HGAP = 22, VGAP = 22, STUB = 34;
-  const BASE_BAR = 22, NAME_H = 22, ROW_GAP = 80, MIN_BAR = 200, LEFT = 140;
+  // ---- sizing constants ----
+  const LEAF_W = 110, LEAF_H = 66;
+  const SLOT   = LEAF_W + 28;        // horizontal room each ring load needs
+  const PAD    = 28;                 // gap between the bus and the ring of loads
+  const ROW_GAP = 120;               // vertical gap between cluster boxes
+  const BASE_BAR = 22, MIN_BAR = 160, MAX_BAR = 640, BAR_PER_CONN = 26;
+  const LEFT = 80;
 
   const kids       = id => cy.getElementById(id).outgoers("node").map(n => n.id());
   const isBd       = id => cy.getElementById(id).data("isBoard") === 1;
   const leaves     = id => kids(id).filter(k => !isBd(k));
   const boardKids  = id => kids(id).filter(isBd);
+  const outConns   = id => cy.getElementById(id).outgoers("edge").length;
 
-  const gridDims = n => {
-    if (!n) return { cols: 0, rows: 0, w: 0, h: 0 };
-    const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
-    return { cols, rows, w: cols * LEAF_W + (cols - 1) * HGAP, h: rows * LEAF_H + (rows - 1) * VGAP };
+  // #2: the bus bar gets WIDER the more feeders leave it, so the connectors
+  // spread out side by side instead of stacking on top of each other.
+  const barWidth  = id => Math.min(MAX_BAR,
+                          Math.max(MIN_BAR, BASE_BAR + outConns(id) * BAR_PER_CONN));
+  const barHeight = id => BASE_BAR + Math.min(30, outConns(id) * 1.8);
+
+  // #3: each board is a square CLUSTER — the bus sits in the middle and its
+  // loads are arranged in a square ring all around it. `ringR` is the
+  // half-size of that square (distance from centre to the ring centre-line).
+  const ringR = id => {
+    const n = leaves(id).length;
+    if (!n) return 0;
+    const perSide = Math.ceil(n / 4);
+    const needForLoads = (perSide * SLOT) / 2;       // keep loads from crowding
+    const needForBar   = barWidth(id) / 2 + LEAF_W / 2 + PAD;  // clear the bar
+    return Math.max(needForLoads, needForBar);
   };
-  const barWidth  = id => Math.max(MIN_BAR, gridDims(leaves(id).length).w);
-  const barHeight = id => BASE_BAR + Math.min(30, kids(id).length * 1.8);
+  // Full half-height of a cluster's bounding box (centre -> outer edge of loads).
+  const clusterReach = id => {
+    const r = ringR(id);
+    return r ? r + LEAF_H / 2 + PAD : barHeight(id) / 2 + LEAF_H / 2 + PAD;
+  };
+
+  /** Even positions around the perimeter of a square (half-side R) centred at
+   *  (cx, cy). Loads are pushed outward by their half-size so they sit just
+   *  outside the ring line. Returns an array of {x, y}. */
+  function squareRing(n, cx, cy, R) {
+    const out = [];
+    const side = 2 * R, perim = 4 * side;
+    for (let i = 0; i < n; i++) {
+      const t = ((i + 0.5) / n) * perim;
+      const seg = Math.floor(t / side), frac = (t - seg * side) / side;
+      let x, y;
+      if (seg === 0)      { x = -R + side * frac; y = -R; y -= LEAF_H / 2 + PAD; } // top
+      else if (seg === 1) { x =  R; y = -R + side * frac; x += LEAF_W / 2 + PAD; } // right
+      else if (seg === 2) { x =  R - side * frac; y =  R; y += LEAF_H / 2 + PAD; } // bottom
+      else                { x = -R; y =  R - side * frac; x -= LEAF_W / 2 + PAD; } // left
+      out.push({ x: cx + x, y: cy + y });
+    }
+    return out;
+  }
 
   const boards = cy.nodes("[isBoard = 1]").map(n => n.id());
   const roots  = boards.filter(b => cy.getElementById(b).incomers("node").length === 0);
 
+  // BFS order so parents are placed above their child boards.
   const order = [], seen = new Set(), q = [...roots];
   while (q.length) {
     const b = q.shift();
@@ -606,44 +702,37 @@ function applySldLayout(cy) {
   }
   boards.forEach(b => { if (!seen.has(b)) { seen.add(b); order.push(b); } });
 
+  // Common centre X so every square cluster shares a vertical spine.
+  const maxReach = Math.max(120, ...order.map(clusterReach));
+  const cx = LEFT + maxReach;
+
   const pos = {};
   let curY = 30;
   order.forEach(id => {
-    const lv = leaves(id), bw = barWidth(id), bh = barHeight(id), g = gridDims(lv.length);
+    const reach = clusterReach(id);
+    curY += reach;                 // move down to this cluster's centre
+    const bw = barWidth(id), bh = barHeight(id);
     cy.getElementById(id).data("barW", bw);
     cy.getElementById(id).data("barH", bh);
-    const cx = LEFT + bw / 2;
-    if (lv.length) {                          // loads in a square-ish block, centered over the bus
-      const sx = cx - g.w / 2 + LEAF_W / 2, sy = curY + LEAF_H / 2;
-      lv.forEach((lf, i) => {
-        const r = Math.floor(i / g.cols), c = i % g.cols;
-        pos[lf] = { x: sx + c * (LEAF_W + HGAP), y: sy + r * (LEAF_H + VGAP) };
-      });
+
+    pos[id] = { x: cx, y: curY };  // bus bar sits at the cluster centre
+
+    const lv = leaves(id);
+    if (lv.length) {
+      const ring = squareRing(lv.length, cx, curY, ringR(id));
+      lv.forEach((lf, i) => { pos[lf] = ring[i]; });
     }
-    const barY = curY + g.h + STUB + bh / 2;
-    pos[id] = { x: cx, y: barY };
-    curY = barY + bh / 2 + NAME_H + ROW_GAP + LEAF_H;
+
+    curY += reach + ROW_GAP;       // leave room before the next cluster
   });
   cy.nodes("[!isGroup]").forEach(n => { if (pos[n.id()]) n.position(pos[n.id()]); });
 
-  // #1: spread inter-board cables along the SOURCE bus (not all from one point)
+  // #2 (cont.): spread the inter-board cables along the SOURCE bus so they
+  // leave it side by side rather than all from one point.
   boards.forEach(src => {
     const oe = cy.getElementById(src).outgoers("edge").filter(e => e.data("tgtBoard") === 1);
     const k = oe.length, bw = cy.getElementById(src).data("barW");
     oe.forEach((e, i) => e.style({ "source-endpoint": (bw * (i + 0.5) / k - bw / 2) + "px 50%" }));
-  });
-
-  // fan out multi-feeders (same source + target) into separate stubs
-  const groups = {};
-  cy.edges("[tgtBoard = 0]").forEach(e => {
-    const key = e.source().id() + ">>" + e.target().id();
-    (groups[key] = groups[key] || []).push(e);
-  });
-  Object.values(groups).forEach(g => {
-    if (g.length > 1) g.forEach((e, i) => {
-      const off = (i - (g.length - 1) / 2) * 26;
-      e.style({ "target-endpoint": off + "px -50%", "source-endpoint": off + "px 50%" });
-    });
   });
 }
 
