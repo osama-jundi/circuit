@@ -1,0 +1,30 @@
+# Render Blueprint. In the Render dashboard: New + > Blueprint, point it at
+# this repo, and it will create the service below.
+#
+# IMPORTANT: the SQLite database lives on a persistent disk so your users,
+# edits and history survive deploys and restarts. Render's normal filesystem
+# is ephemeral — without this disk you'd lose all data on every deploy.
+services:
+  - type: web
+    name: circuit-sld
+    runtime: python
+    plan: starter            # the persistent disk below requires a paid plan
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    disk:
+      name: circuit-data
+      mountPath: /var/data   # CIRCUIT_DB points here so data is persisted
+      sizeGB: 1
+    envVars:
+      - key: CIRCUIT_DB
+        value: /var/data/circuit.db
+      - key: SECRET_KEY
+        generateValue: true  # Render generates a strong random value
+      - key: SECURE_COOKIES
+        value: "1"
+      - key: FLASK_DEBUG
+        value: "0"
+      - key: ADMIN_USERNAME
+        sync: false           # set these yourself in the dashboard
+      - key: ADMIN_PASSWORD
+        sync: false

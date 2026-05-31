@@ -280,16 +280,22 @@ function renderUsers(body) {
           </div>
           <button id="nu-add">Add user</button>
         </div>`;
+      const adminCount = (users || []).filter(u => u.role === "admin").length;
       const rows = (users || []).map(u => {
         const isMe = u.username === MY_NAME;
+        // The last remaining admin can't be demoted or deleted (would lock
+        // everyone out). The server enforces this too; this just hides it.
+        const lastAdmin = u.role === "admin" && adminCount <= 1;
+        const dis = " disabled style='opacity:.4;cursor:not-allowed'";
+        const lockTip = lastAdmin ? ' title="The last admin can\'t be changed — create another admin first"' : "";
         return `<tr data-user="${escapeHtml(u.username)}">
           <td><strong>${escapeHtml(u.username)}</strong>${isMe ? " (you)" : ""}</td>
           <td><span class="pill ${u.role}">${u.role}</span></td>
           <td style="white-space:nowrap">${fmtTime(u.created_at)}</td>
-          <td style="text-align:right;white-space:nowrap">
-            <button class="mini-btn ghost act-role">${u.role === "admin" ? "Make user" : "Make admin"}</button>
+          <td style="text-align:right;white-space:nowrap"${lockTip}>
+            <button class="mini-btn ghost act-role"${lastAdmin ? dis : ""}>${u.role === "admin" ? "Make user" : "Make admin"}</button>
             <button class="mini-btn ghost act-pw">Reset password</button>
-            <button class="mini-btn danger act-del"${isMe ? " disabled style='opacity:.4;cursor:not-allowed'" : ""}>Delete</button>
+            <button class="mini-btn danger act-del"${(isMe || lastAdmin) ? dis : ""}>Delete</button>
           </td>
         </tr>`;
       }).join("");
@@ -316,7 +322,7 @@ function wireUserActions(body) {
   body.querySelectorAll("tr[data-user]").forEach(tr => {
     const username = tr.dataset.user;
     const roleBtn = tr.querySelector(".act-role");
-    if (roleBtn) roleBtn.addEventListener("click", () => {
+    if (roleBtn && !roleBtn.disabled) roleBtn.addEventListener("click", () => {
       const newRole = roleBtn.textContent === "Make admin" ? "admin" : "user";
       apiJson(`/api/users/${encodeURIComponent(username)}`, "PATCH", { role: newRole })
         .then(() => { toast(`${username} is now ${newRole}`); renderUsers(body); })

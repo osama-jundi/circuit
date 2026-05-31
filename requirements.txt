@@ -2,3 +2,5 @@ Flask
 pandas
 networkx
 openpyxl
+python-dotenv
+gunicorn

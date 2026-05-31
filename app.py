@@ -15,7 +15,15 @@ the latest stored workbook and replay the saved status overrides on top.
 """
 
 import io
+import os
 from functools import wraps
+
+# Load a local .env file if present (no-op when python-dotenv isn't installed).
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from flask import (Flask, render_template, jsonify, request, abort, send_file,
                    session, redirect, url_for)
@@ -30,6 +38,17 @@ app = Flask(__name__)
 
 db.init_db()
 app.secret_key = db.get_secret_key()
+
+# --- Session cookie hardening ---
+# In production (behind HTTPS, e.g. on Render) set SECURE_COOKIES=1 so the
+# session cookie is only sent over HTTPS. HttpOnly is on by default, which
+# keeps the cookie away from JavaScript/XSS. SameSite=Lax blocks it on most
+# cross-site requests (CSRF mitigation).
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SECURE_COOKIES", "0") == "1",
+)
 
 # In-memory graph rebuilt from the DB. None until a workbook is stored.
 DATA = None
@@ -145,9 +164,10 @@ def logout():
 @login_required
 def index():
     stats = DATA["stats"] if DATA else None
-    # Warn the seeded admin to change the default password.
+    # Warn only when the seeded admin still uses the well-known insecure
+    # password "admin123". A custom ADMIN_PASSWORD set via env is fine.
     default_admin = (current_user()["username"] == db.DEFAULT_ADMIN and
-                     db.verify_login(db.DEFAULT_ADMIN, db.DEFAULT_ADMIN_PW) is not None)
+                     db.verify_login(db.DEFAULT_ADMIN, "admin123") is not None)
     return render_template("index.html", stats=stats, user=current_user(),
                            default_admin_warning=default_admin)
 
@@ -352,4 +372,9 @@ def api_delete_user(username):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    # Local dev server. On Render we run via gunicorn (see Procfile), which
+    # imports `app` directly and ignores this block.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    app.run(host=host, port=port, debug=debug)

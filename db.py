@@ -21,9 +21,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 DB_PATH = os.environ.get("CIRCUIT_DB", "circuit.db")
 
-# Seeded on first run; the UI shows a banner telling the admin to change it.
-DEFAULT_ADMIN = "admin"
-DEFAULT_ADMIN_PW = "admin123"
+# Seeded on first run. You can override these via the environment (handy on
+# Render: set ADMIN_USERNAME / ADMIN_PASSWORD). If left at the defaults, the
+# UI shows a banner telling the admin to change the password.
+DEFAULT_ADMIN = os.environ.get("ADMIN_USERNAME", "admin")
+DEFAULT_ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin123")
 
 VALID_ROLES = ("admin", "user")
 
@@ -94,7 +96,15 @@ def init_db():
 
 
 def get_secret_key() -> str:
-    """A stable Flask secret key, persisted in the meta table."""
+    """A stable Flask secret key.
+
+    Prefer the SECRET_KEY environment variable (set this in production /
+    Render). If it's absent we fall back to a random key persisted in the
+    meta table so sessions survive a restart on a single instance.
+    """
+    env_key = os.environ.get("SECRET_KEY")
+    if env_key:
+        return env_key
     with _conn() as c:
         row = c.execute("SELECT value FROM meta WHERE key = 'secret_key'").fetchone()
         if row:
