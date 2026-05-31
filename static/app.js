@@ -1238,45 +1238,86 @@ function applySldLayout(cy) {
   const boards = cy.nodes("[isBoard = 1]").map(n => n.id());
   const roots  = boards.filter(b => cy.getElementById(b).incomers("node").length === 0);
 
-  // BFS order so parents are placed above their child boards.
-  const order = [], seen = new Set(), q = [...roots];
-  while (q.length) {
-    const b = q.shift();
-    if (seen.has(b)) continue;
-    seen.add(b); order.push(b);
-    boardKids(b).forEach(c => q.push(c));
-  }
-  boards.forEach(b => { if (!seen.has(b)) { seen.add(b); order.push(b); } });
+  // ---- Lay boards out as a TOP-DOWN TREE that spreads horizontally ----
+  // (instead of stacking every board on one vertical line). Power still flows
+  // downward — each board sits below its parent — but sibling sub-trees fan
+  // out left/right, so a fresh diagram opens balanced and roughly square
+  // rather than as a tall vertical strip.
+  const HSPACE = 70;                 // horizontal gap between sibling sub-trees
 
-  // All bars share a vertical spine; the widest bar sets the centre line.
-  const maxBar = Math.max(BAR_MIN, ...order.map(barWidth));
-  const cx = LEFT + maxBar / 2;
+  // Depth (rank) of each board: distance from a root, via BFS over boards.
+  const depth = {}, seenD = new Set(), dq = roots.map(r => [r, 0]);
+  while (dq.length) {
+    const [b, d] = dq.shift();
+    if (seenD.has(b)) continue;
+    seenD.add(b); depth[b] = d;
+    boardKids(b).forEach(c => dq.push([c, d + 1]));
+  }
+  // Orphans (unreachable, e.g. inside a cycle) become their own roots at depth 0.
+  const rootList = [...roots];
+  boards.forEach(b => { if (depth[b] === undefined) { depth[b] = 0; rootList.push(b); } });
+
+  // Width a whole sub-tree needs = max(this bar, the span of its children).
+  const slotCache = {};
+  const slotW = (id, guard = new Set()) => {
+    if (slotCache[id] !== undefined) return slotCache[id];
+    if (guard.has(id)) return barWidth(id);     // cycle guard
+    guard.add(id);
+    const ch = boardKids(id);
+    const span = ch.length
+      ? ch.reduce((s, c) => s + slotW(c, guard), 0) + HSPACE * (ch.length - 1) : 0;
+    return (slotCache[id] = Math.max(BAR_MIN, barWidth(id), span));
+  };
+
+  // Place each board centered in its own horizontal slot; children centered
+  // as a group beneath it.
+  const posX = {}, placed = new Set();
+  const placeX = (id, slotLeft) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    const w = slotW(id);
+    posX[id] = slotLeft + w / 2;
+    const ch = boardKids(id).filter(c => !placed.has(c));
+    if (ch.length) {
+      const span = ch.reduce((s, c) => s + slotW(c), 0) + HSPACE * (ch.length - 1);
+      let cur = slotLeft + (w - span) / 2;
+      ch.forEach(c => { placeX(c, cur); cur += slotW(c) + HSPACE; });
+    }
+  };
+  let cursorX = LEFT;
+  rootList.forEach(r => { placeX(r, cursorX); cursorX += slotW(r) + HSPACE * 2; });
+
+  // Vertical position by depth: each rank is a row tall enough for its loads
+  // + bar, with a gap below for the down-cables.
+  const rowH = {};
+  boards.forEach(id => {
+    rowH[depth[id]] = Math.max(rowH[depth[id]] || 0, stackH(id) + barHeight(id) + NAME_H);
+  });
+  const maxDepth = boards.reduce((m, id) => Math.max(m, depth[id]), 0);
+  const rowTop = {}; let yCur = 40;
+  for (let d = 0; d <= maxDepth; d++) { rowTop[d] = yCur; yCur += (rowH[d] || 0) + ROW_GAP; }
 
   const pos = {};
-  let curY = 40;
-  order.forEach(id => {
-    const lv = leaves(id), bw = barWidth(id), bh = barHeight(id);
-    const cols = perRow(id), rows = rowCount(id), rw = rowWidth(id);
+  boards.forEach(id => {
+    const bw = barWidth(id), bh = barHeight(id), d = depth[id];
     cy.getElementById(id).data("barW", bw);
     cy.getElementById(id).data("barH", bh);
 
-    // Loads: one or more centered rows sitting above the bar.
+    // Loads: one or more rows centered above this board's bar.
+    const lv = leaves(id), cols = perRow(id), rw = rowWidth(id);
     if (lv.length) {
-      const sx = cx - rw / 2 + LEAF_W / 2, sy = curY + LEAF_H / 2;
+      const sx = posX[id] - rw / 2 + LEAF_W / 2, sy = rowTop[d] + LEAF_H / 2;
       lv.forEach((lf, i) => {
         const r = Math.floor(i / cols), c = i % cols;
         pos[lf] = { x: sx + c * (LEAF_W + HGAP), y: sy + r * (LEAF_H + HGAP) };
       });
     }
-
-    const barY = curY + stackH(id) + bh / 2;
-    pos[id] = { x: cx, y: barY };
-    curY = barY + bh / 2 + NAME_H + ROW_GAP;
+    pos[id] = { x: posX[id], y: rowTop[d] + stackH(id) + bh / 2 };
   });
   cy.nodes("[!isGroup]").forEach(n => { if (pos[n.id()]) n.position(pos[n.id()]); });
 
-  // #2 (cont.): spread the inter-board cables along the SOURCE bus so they
-  // leave it side by side rather than all from one point.
+  // Spread the inter-board cables along the SOURCE bus so they leave it side
+  // by side rather than all from one point.
   boards.forEach(src => {
     const oe = cy.getElementById(src).outgoers("edge").filter(e => e.data("tgtBoard") === 1);
     const k = oe.length, bw = cy.getElementById(src).data("barW");
