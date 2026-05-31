@@ -94,7 +94,7 @@
   </style>
 </head>
 <body data-role="{{ user.role if user else '' }}" data-username="{{ user.username if user else '' }}"
-      data-can-manage="{{ 'yes' if user and user.role == 'admin' else 'no' }}">
+      data-csrf="{{ csrf }}" data-can-manage="{{ 'yes' if user and user.role == 'admin' else 'no' }}">
 
 <header>
   <h1>NHM Feeders — Projects</h1>
@@ -102,8 +102,8 @@
   <button id="users-btn" class="top-btn" title="Manage users">👥 Users</button>
   {% endif %}
   {% if user %}
-  <div class="user-box" title="Signed in as {{ user.username }} ({{ user.role }})">
-    <span class="user-name">{{ user.username }}</span>
+  <div class="user-box" title="Account settings">
+    <span class="user-name" id="account-link" style="cursor:pointer">{{ user.username }}</span>
     <span class="user-role">{{ user.role }}</span>
     <a href="{{ url_for('logout') }}" class="logout">⎋ Logout</a>
   </div>

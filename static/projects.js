@@ -13,6 +13,7 @@ const el = (tag, props = {}, children = []) => {
 };
 const CAN_MANAGE = document.body.dataset.canManage === "yes";
 const MY_NAME = document.body.dataset.username || "";
+const CSRF = document.body.dataset.csrf || "";
 const STATUS_COLORS = { "Energized": "#00B050", "Issued": "#FFC000", "Not Issued": "#A6A6A6" };
 const STATUS_ORDER = ["Energized", "Issued", "Not Issued"];
 
@@ -61,7 +62,7 @@ function fmtTime(iso) {
 
 /** fetch JSON, rejecting with the server's error message on non-2xx. */
 function apiJson(url, method, payload) {
-  const opts = { method, headers: {} };
+  const opts = { method, headers: { "X-CSRFToken": CSRF } };
   if (payload !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(payload);
@@ -143,10 +144,43 @@ function deleteProject(p) {
     .catch(err => toast(err, true));
 }
 
-// -------- Users modal (admin) --------
-function openModal() { $("modal-overlay").classList.add("open"); renderUsers(); }
+// -------- Modal --------
+function openModal(title, builder) {
+  $("modal-title").textContent = title;
+  $("modal-overlay").classList.add("open");
+  builder();
+}
 function closeModal() { $("modal-overlay").classList.remove("open"); }
 
+// -------- My account: change own password --------
+function renderAccount() {
+  const body = $("modal-body");
+  body.innerHTML = `
+    <div style="max-width:360px">
+      <p style="font-size:13px;color:#475467;margin:0 0 14px">
+        Signed in as <strong>${escapeHtml(MY_NAME)}</strong>. Change your password below.</p>
+      <label style="font-size:11px;color:#475467">Current password</label>
+      <input id="ac-cur" type="password" autocomplete="current-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 12px;border:1px solid #d0d5dd;border-radius:6px">
+      <label style="font-size:11px;color:#475467">New password (min 6 characters)</label>
+      <input id="ac-new" type="password" autocomplete="new-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 12px;border:1px solid #d0d5dd;border-radius:6px">
+      <label style="font-size:11px;color:#475467">Confirm new password</label>
+      <input id="ac-new2" type="password" autocomplete="new-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 16px;border:1px solid #d0d5dd;border-radius:6px">
+      <button class="mini-btn" id="ac-save">Change password</button>
+    </div>`;
+  $("ac-save").addEventListener("click", () => {
+    const cur = $("ac-cur").value, nw = $("ac-new").value, nw2 = $("ac-new2").value;
+    if (nw.length < 6) { toast("New password must be at least 6 characters", true); return; }
+    if (nw !== nw2) { toast("New passwords don't match", true); return; }
+    apiJson("/api/account/password", "POST", { current_password: cur, new_password: nw })
+      .then(() => { toast("Password changed"); closeModal(); })
+      .catch(err => toast(err, true));
+  });
+}
+
+// -------- Users modal (admin) --------
 function renderUsers() {
   const body = $("modal-body");
   body.innerHTML = '<div class="empty">Loading…</div>';
@@ -213,7 +247,9 @@ function wireUsers(body) {
 
 // -------- Wire up --------
 const usersBtn = $("users-btn");
-if (usersBtn) usersBtn.addEventListener("click", openModal);
+if (usersBtn) usersBtn.addEventListener("click", () => openModal("Manage users", renderUsers));
+const accountLink = $("account-link");
+if (accountLink) accountLink.addEventListener("click", () => openModal("My account", renderAccount));
 $("modal-close").addEventListener("click", closeModal);
 $("modal-overlay").addEventListener("click", (e) => { if (e.target === $("modal-overlay")) closeModal(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });

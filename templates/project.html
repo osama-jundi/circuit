@@ -506,7 +506,7 @@
   </style>
 </head>
 <body data-role="{{ user.role if user else '' }}" data-username="{{ user.username if user else '' }}"
-      data-project-id="{{ project.id }}"
+      data-project-id="{{ project.id }}" data-csrf="{{ csrf }}"
       data-can-manage="{{ 'yes' if user and user.role == 'admin' else 'no' }}">
 
 <header>
@@ -535,8 +535,8 @@
     </div>
   </div>
   {% if user %}
-  <div class="user-box" title="Signed in as {{ user.username }} ({{ user.role }})">
-    <span class="user-name">{{ user.username }}</span>
+  <div class="user-box" title="Account settings">
+    <span class="user-name" id="account-link" style="cursor:pointer">{{ user.username }}</span>
     <span class="user-role">{{ user.role }}</span>
     <a href="{{ url_for('logout') }}" class="logout" title="Sign out">⎋ Logout</a>
   </div>

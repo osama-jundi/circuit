@@ -22,6 +22,7 @@ let currentFileName = "";     // name of the active project (for the title block
 let CURRENT_FILE = null;      // id of the file (diagram) being viewed
 let FILE_LIST = [];           // [{id, name, ...}] cached for the file tab bar
 let lastRevision = -1;        // file revision we last rendered (for polling)
+const CSRF = document.body.dataset.csrf || "";   // CSRF token for mutating calls
 
 const $  = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -181,7 +182,8 @@ function setupUpload() {
     form.append("file", file);
     form.append("name", name);
     toast("Uploading " + file.name + "…");
-    fetch(`/api/projects/${PROJECT_ID}/files`, { method: "POST", body: form })
+    fetch(`/api/projects/${PROJECT_ID}/files`, { method: "POST", body: form,
+            headers: { "X-CSRFToken": CSRF } })
       .then(r => r.json().then(body => ({ ok: r.ok, body })))
       .then(({ ok, body }) => {
         if (!ok) { toast(body.error || "Upload failed", true); return; }
@@ -363,6 +365,35 @@ function setupModals() {
   const dBtn = $("dashboard-btn");
   if (dBtn) dBtn.addEventListener("click",
     () => openModal("Energization progress", renderDashboard));
+  const acc = $("account-link");
+  if (acc) acc.addEventListener("click", () => openModal("My account", renderAccount));
+}
+
+/** Change-my-password form (any logged-in user). */
+function renderAccount(body) {
+  body.innerHTML = `
+    <div style="max-width:360px">
+      <p style="font-size:13px;color:#475467;margin:0 0 14px">
+        Signed in as <strong>${escapeHtml(MY_NAME)}</strong>. Change your password below.</p>
+      <label style="font-size:11px;color:#475467">Current password</label>
+      <input id="ac-cur" type="password" autocomplete="current-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 12px;border:1px solid #d0d5dd;border-radius:6px">
+      <label style="font-size:11px;color:#475467">New password (min 6 characters)</label>
+      <input id="ac-new" type="password" autocomplete="new-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 12px;border:1px solid #d0d5dd;border-radius:6px">
+      <label style="font-size:11px;color:#475467">Confirm new password</label>
+      <input id="ac-new2" type="password" autocomplete="new-password"
+             style="width:100%;padding:8px 10px;margin:4px 0 16px;border:1px solid #d0d5dd;border-radius:6px">
+      <button class="mini-btn" id="ac-save">Change password</button>
+    </div>`;
+  $("ac-save").addEventListener("click", () => {
+    const cur = $("ac-cur").value, nw = $("ac-new").value, nw2 = $("ac-new2").value;
+    if (nw.length < 6) { toast("New password must be at least 6 characters", true); return; }
+    if (nw !== nw2) { toast("New passwords don't match", true); return; }
+    apiJson("/api/account/password", "POST", { current_password: cur, new_password: nw })
+      .then(() => { toast("Password changed"); closeModal(); })
+      .catch(err => toast(err, true));
+  });
 }
 
 /** Progress dashboard for the current file, computed live from the diagram:
@@ -549,7 +580,7 @@ function wireUserActions(body) {
 
 /** fetch JSON, rejecting with the server's error message on non-2xx. */
 function apiJson(url, method, payload) {
-  const opts = { method, headers: {} };
+  const opts = { method, headers: { "X-CSRFToken": CSRF } };
   if (payload !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(payload);
@@ -962,7 +993,7 @@ function focusEdgeBySn(sn) {
 function changeEdgeStatus(sn, newStatus, callback) {
   fetch(`/api/files/${CURRENT_FILE}/edge/${sn}/status`, {
     method: "POST",
-    headers: {"Content-Type": "application/json"},
+    headers: {"Content-Type": "application/json", "X-CSRFToken": CSRF},
     body: JSON.stringify({status: newStatus}),
   })
   .then(r => r.json().then(body => ({ok: r.ok, body})))

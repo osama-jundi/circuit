@@ -19,6 +19,9 @@ persisted (SQLite locally / PostgreSQL on Render) and audited.
 import io
 import os
 import json
+import time
+import secrets
+from datetime import timedelta
 from functools import wraps
 
 try:
@@ -51,7 +54,50 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("SECURE_COOKIES", "0") == "1",
+    # Sign users out after this much inactivity (the cookie expiry slides
+    # forward on each request, so it's effectively an idle timeout).
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=int(os.environ.get("SESSION_HOURS", "8"))),
 )
+
+
+# ---------------- CSRF protection ----------------
+# Synchronizer-token pattern: a per-session token is rendered into each page
+# and must be echoed back in the X-CSRFToken header on every state-changing
+# API call. Combined with SameSite=Lax cookies this blocks cross-site writes.
+def get_csrf():
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_hex(16)
+    return session["csrf"]
+
+
+@app.before_request
+def _csrf_protect():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    if request.path == "/login":      # pre-auth form; exempt (login-CSRF is low risk)
+        return
+    sent = request.headers.get("X-CSRFToken") or request.form.get("csrf_token")
+    if not session.get("csrf") or sent != session.get("csrf"):
+        return jsonify({"error": "Bad or missing CSRF token. Reload the page and retry."}), 400
+
+
+# ---------------- Login rate limiting ----------------
+# Simple in-memory limiter (fine for our single gunicorn worker): lock out an
+# IP after too many failed logins within a window.
+LOGIN_FAILS = {}
+LOGIN_MAX = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "8"))
+LOGIN_WINDOW = 900   # 15 minutes
+
+
+def _login_blocked(ip):
+    now = time.time()
+    fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW]
+    LOGIN_FAILS[ip] = fails
+    return len(fails) >= LOGIN_MAX
+
+
+def _record_login_fail(ip):
+    LOGIN_FAILS.setdefault(ip, []).append(time.time())
 
 
 @app.route("/healthz")
@@ -169,17 +215,28 @@ def admin_required(fn):
 def login():
     if request.method == "GET":
         return render_template("login.html")
+
+    ip = request.remote_addr or "?"
+    if _login_blocked(ip):
+        return render_template("login.html",
+            error="Too many failed attempts. Please wait a few minutes and try again."), 429
+
     body = request.form if request.form else (request.get_json(silent=True) or {})
     u = db.verify_login((body.get("username") or "").strip(), body.get("password") or "")
     if not u:
+        _record_login_fail(ip)
         return render_template("login.html", error="Invalid username or password."), 401
+
+    LOGIN_FAILS.pop(ip, None)
+    session.permanent = True               # enable the idle-timeout lifetime
     session["user"] = {"username": u["username"], "role": u["role"]}
+    get_csrf()                             # issue a CSRF token for this session
     return redirect(request.args.get("next") or url_for("projects_page"))
 
 
 @app.route("/logout")
 def logout():
-    session.pop("user", None)
+    session.clear()
     return redirect(url_for("login"))
 
 
@@ -190,7 +247,7 @@ def projects_page():
     default_admin = (current_user()["username"] == db.DEFAULT_ADMIN and
                      db.verify_login(db.DEFAULT_ADMIN, "admin123") is not None)
     return render_template("projects.html", user=current_user(),
-                           default_admin_warning=default_admin)
+                           default_admin_warning=default_admin, csrf=get_csrf())
 
 
 @app.route("/project/<int:pid>")
@@ -199,7 +256,23 @@ def project_page(pid):
     proj = db.get_project(pid)
     if not proj:
         return redirect(url_for("projects_page"))
-    return render_template("project.html", user=current_user(), project=dict(proj))
+    return render_template("project.html", user=current_user(), project=dict(proj), csrf=get_csrf())
+
+
+@app.route("/api/account/password", methods=["POST"])
+@login_required
+def api_change_password():
+    """Let a logged-in user change their own password."""
+    body = request.get_json(silent=True) or {}
+    me = current_user()["username"]
+    if not db.verify_login(me, body.get("current_password") or ""):
+        return jsonify({"error": "Current password is incorrect."}), 400
+    new = body.get("new_password") or ""
+    if len(new) < 6:
+        return jsonify({"error": "New password must be at least 6 characters."}), 400
+    db.set_password(me, new)
+    db.log("password_change_self", me)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/me")
