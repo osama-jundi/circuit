@@ -17,6 +17,7 @@ cytoscape.use(cytoscapeDagre);
 let cy = null;                // the cytoscape instance
 let STATUSES = [];            // ['Energized', 'Issued', 'Not Issued']
 let COLORS = {};              // status -> color hex
+let currentFileName = "";     // name of the last uploaded workbook (for the title block)
 
 const $  = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -94,6 +95,7 @@ function boot() {
     setupDetailsClose();
     renderFindings(data.findings);
     renderStatusSummary(cy);
+    renderTitleBlock(cy);
 
     console.log(
       `Map ready: ${cy.nodes().length} panels, ${cy.edges().length} feeders.`
@@ -154,6 +156,8 @@ function setupUpload() {
       .then(r => r.json().then(body => ({ ok: r.ok, body })))
       .then(({ ok, body }) => {
         if (!ok) { toast(body.error || "Upload failed", true); return; }
+        currentFileName = file.name.replace(/\.[^.]+$/, "");
+        const nm = $("tb-name"); if (nm) nm.value = currentFileName;  // new file -> new title
         toast(`Loaded ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
         $("loading").style.display = "block";
         $("loading").textContent = "Building map…";
@@ -165,7 +169,80 @@ function setupUpload() {
 }
 
 setupUpload();
+setupTitleBlock();
 boot();
+
+// -------- Title block (drawing-style corner panel) --------
+function setupTitleBlock() {
+  const toggle = $("tb-toggle");
+  if (toggle) toggle.addEventListener("click",
+    () => $("titleblock").classList.toggle("collapsed"));
+}
+
+/** Build the corner title block: project name, date, panel/feeder counts,
+ *  a status breakdown and a transformer/main-board status table — the kind
+ *  of summary that lives in the corner of a real SLD sheet. */
+function renderTitleBlock(cy) {
+  const tb = $("titleblock"), body = $("tb-body");
+  if (!tb || !body) return;
+  tb.classList.add("show");
+
+  const nameInput = $("tb-name");
+  if (nameInput && !nameInput.value)
+    nameInput.value = currentFileName || "Single Line Diagram";
+
+  // Feeder status counts
+  const counts = {}; let total = 0;
+  cy.edges().forEach(e => { const s = e.data("status"); counts[s] = (counts[s] || 0) + 1; total++; });
+
+  const dot = c => {
+    const d = el("span", { className: "tb-dot" });
+    d.style.background = c; return d;
+  };
+  const statusRow = (label, val, color) => {
+    const lab = el("div", { className: "tb-label" });
+    if (color) lab.appendChild(dot(color));
+    lab.appendChild(el("span", { className: "name", textContent: label }));
+    return el("div", { className: "tb-row" }, [lab, el("span", { className: "tb-val", textContent: String(val) })]);
+  };
+
+  body.innerHTML = "";
+
+  // Meta line: date + totals
+  const meta = el("div", { className: "tb-meta" }, [
+    el("span", { textContent: new Date().toLocaleDateString() }),
+    el("span", { textContent: `${cy.nodes("[!isGroup]").length} panels · ${total} feeders` }),
+  ]);
+  body.appendChild(meta);
+
+  // Status breakdown
+  body.appendChild(el("div", { className: "tb-section", textContent: "Feeder status" }));
+  STATUSES.forEach(s => body.appendChild(statusRow(s, counts[s] || 0, COLORS[s])));
+
+  // Transformer / main-board energization table (like the TX list on a sheet)
+  let mains = cy.nodes('[isBoard = 1]').filter(n => n.data("type") === "TX");
+  let heading = "Transformers";
+  if (mains.length === 0) {
+    mains = cy.nodes('[isBoard = 1]').filter(n => n.incomers("node").length === 0);
+    heading = "Main boards";
+  }
+  if (mains.length) {
+    body.appendChild(el("div", { className: "tb-section", textContent: heading }));
+    const arr = mains.map(n => n).sort((a, b) => a.id().localeCompare(b.id()));
+    arr.slice(0, 8).forEach(n => {
+      const inc = n.incomers("edge");
+      const st = inc.length ? inc[0].data("status") : "—";
+      const lab = el("div", { className: "tb-label" }, [
+        dot(COLORS[st] || "#cbd2da"),
+        el("span", { className: "name", textContent: n.id(), title: n.id() }),
+      ]);
+      body.appendChild(el("div", { className: "tb-row" }, [lab,
+        el("span", { className: "tb-val", textContent: st, style: "font-size:10px;color:#667085" })]));
+    });
+    if (arr.length > 8)
+      body.appendChild(el("div", { className: "tb-more", textContent: `…and ${arr.length - 8} more` }));
+  }
+}
 
 
 // -------- 3. Styling --------

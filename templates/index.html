@@ -326,6 +326,51 @@
       font-size: 14px; font-weight: 600; cursor: pointer;
     }
     #empty-state button:hover { background: #2a4d7a; }
+
+    /* ---- Title block (drawing-style panel, bottom-right corner) ---- */
+    #titleblock {
+      position: absolute;
+      right: 16px; bottom: 16px;
+      width: 264px;
+      background: #fff;
+      border: 1px solid #1e3a5f;
+      border-radius: 4px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+      font-size: 11px;
+      z-index: 50;
+      display: none;            /* shown once data loads */
+    }
+    #titleblock.show { display: block; }
+    #titleblock .tb-head {
+      background: #1e3a5f; color: #fff;
+      padding: 6px 8px 6px 10px;
+      display: flex; align-items: center; gap: 6px;
+      border-radius: 3px 3px 0 0;
+    }
+    #titleblock .tb-head input {
+      flex: 1; min-width: 0;
+      background: transparent; border: none;
+      border-bottom: 1px solid rgba(255,255,255,0.35);
+      color: #fff; font-size: 12px; font-weight: 600; outline: none;
+      padding: 1px 0;
+    }
+    #titleblock .tb-head input::placeholder { color: rgba(255,255,255,0.55); }
+    #titleblock .tb-head button {
+      background: transparent; border: none; color: #fff;
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px;
+    }
+    #titleblock.collapsed .tb-body { display: none; }
+    #titleblock.collapsed #tb-toggle { transform: rotate(-90deg); }
+    .tb-body { padding: 8px 10px 10px; }
+    .tb-meta { display: flex; justify-content: space-between; color: #667085; margin-bottom: 6px; }
+    .tb-section { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+                  color: #667085; margin: 8px 0 4px; border-top: 1px solid #eceef2; padding-top: 6px; }
+    .tb-row { display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+    .tb-row .tb-label { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .tb-row .tb-label .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+    .tb-row .tb-val { font-weight: 600; }
+    .tb-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
+    .tb-more { color: #98a2b3; font-style: italic; padding-top: 2px; }
   </style>
 </head>
 <body>
@@ -380,6 +425,14 @@
       <p>Upload your feeders <strong>.xlsx</strong> file to build the single-line diagram.
          It must have an "Energization" sheet with the expected columns.</p>
       <button id="empty-upload-btn">⬆ Upload xlsx</button>
+    </div>
+
+    <div id="titleblock">
+      <div class="tb-head">
+        <input id="tb-name" type="text" title="Project name" placeholder="Project name">
+        <button id="tb-toggle" title="Collapse / expand">▾</button>
+      </div>
+      <div class="tb-body" id="tb-body"></div>
     </div>
   </div>
 
