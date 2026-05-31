@@ -76,7 +76,7 @@ function boot() {
     setupDragging(cy);                       // drag a bus -> its loads move with it
     restoreLayout(cy);                       // apply saved 2D arrangement if any
     setupLayoutControls(cy);                 // Reset button + drag hint in the legend
-    cy.fit(undefined, 30);
+    cy.fit(undefined, 12);
 
     // ---- Wire up interactions ----
     cy.on("tap", "node[!isGroup]", e => openPanelDetails(e.target.id()));
@@ -766,7 +766,10 @@ function applySldLayout(cy) {
   // ---- sizing constants (tuned to read like the reference drawing) ----
   const LEAF_W = 104, LEAF_H = 62, HGAP = 14, STUB = 44;
   const BASE_BAR = 18, MAX_ROW = 14;     // wrap a board's loads after this many
-  const MIN_BAR = 150, MAX_BAR = 1600, BAR_PER_CONN = 6;
+  const MAX_BAR = 1600, CABLE_SLOT = 64, BAR_MIN = 70;
+  // How much taller the bar gets per feeder, and its cap. This makes the
+  // rectangle grow in BOTH dimensions (not just longer) as more leave it.
+  const BAR_PER_CONN_H = 3.2, BAR_H_MAX = 84;
   const NAME_H = 22, ROW_GAP = 150, LEFT = 80;
 
   const kids       = id => cy.getElementById(id).outgoers("node").map(n => n.id());
@@ -784,11 +787,17 @@ function applySldLayout(cy) {
   const rowWidth   = id => { const c = perRow(id);
                              return c ? c * LEAF_W + (c - 1) * HGAP : 0; };
 
-  // #2: the bus bar is at least as wide as its row of loads, and grows with the
-  // number of feeders leaving it — so connectors spread out side by side.
-  const barWidth  = id => Math.min(MAX_BAR,
-                    Math.max(MIN_BAR, rowWidth(id), BASE_BAR + outConns(id) * BAR_PER_CONN));
-  const barHeight = id => BASE_BAR + Math.min(30, outConns(id) * 1.2);
+  // #1: the bar is EXACTLY as wide as its parts — the row of loads (incl. the
+  // gaps between them), with no extra slack. Boards that only feed other boards
+  // (no loads) get just enough width for their down-cables to sit side by side.
+  const barWidth  = id => {
+    const lw = rowWidth(id);                         // exact span of the loads
+    const cw = boardKids(id).length * CABLE_SLOT;    // room for inter-board cables
+    return Math.min(MAX_BAR, Math.max(BAR_MIN, lw, cw));
+  };
+  // #2: the bar also gets THICKER (taller) the more feeders leave it, so the
+  // rectangle becomes bigger overall instead of just longer.
+  const barHeight = id => Math.min(BAR_H_MAX, BASE_BAR + outConns(id) * BAR_PER_CONN_H);
   // Vertical room a board's stack of loads needs above the bar.
   const stackH    = id => { const r = rowCount(id);
                             return r ? r * LEAF_H + (r - 1) * HGAP + STUB : 0; };
@@ -807,7 +816,7 @@ function applySldLayout(cy) {
   boards.forEach(b => { if (!seen.has(b)) { seen.add(b); order.push(b); } });
 
   // All bars share a vertical spine; the widest bar sets the centre line.
-  const maxBar = Math.max(MIN_BAR, ...order.map(barWidth));
+  const maxBar = Math.max(BAR_MIN, ...order.map(barWidth));
   const cx = LEFT + maxBar / 2;
 
   const pos = {};
@@ -903,7 +912,7 @@ function setupLayoutControls(cy) {
   btn.onclick = () => {
     try { localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
     applySldLayout(cy);
-    cy.fit(undefined, 30);
+    cy.fit(undefined, 12);
   };
   wrap.appendChild(btn);
 
