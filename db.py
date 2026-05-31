@@ -214,6 +214,30 @@ def init_db():
               " VALUES (?, ?, 'admin', 0, ?)",
               (DEFAULT_ADMIN, generate_password_hash(DEFAULT_ADMIN_PW), _utcnow()))
 
+    _maybe_reset_admin()
+
+
+def _maybe_reset_admin():
+    """Account recovery for hosts without shell access (e.g. Render free tier).
+
+    When ADMIN_RESET is truthy, force the admin account on boot to match
+    ADMIN_USERNAME / ADMIN_PASSWORD: create it if missing, otherwise reset its
+    password and ensure it's an admin. Set ADMIN_RESET in the dashboard, log in,
+    then remove it so passwords aren't reset on every restart.
+    """
+    if os.environ.get("ADMIN_RESET", "").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    pw_hash = generate_password_hash(DEFAULT_ADMIN_PW)
+    if get_user(DEFAULT_ADMIN):
+        _exec("UPDATE users SET password_hash = ?, role = 'admin', must_change = 0"
+              " WHERE username = ?", (pw_hash, DEFAULT_ADMIN))
+        print(f"[ADMIN_RESET] Reset password for admin '{DEFAULT_ADMIN}'. "
+              f"Remove ADMIN_RESET now.")
+    else:
+        _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
+              " VALUES (?, ?, 'admin', 0, ?)", (DEFAULT_ADMIN, pw_hash, _utcnow()))
+        print(f"[ADMIN_RESET] Created admin '{DEFAULT_ADMIN}'. Remove ADMIN_RESET now.")
+
 
 def _migrate_projectsv1_to_files():
     """Each old project (which carried one workbook) becomes a project
