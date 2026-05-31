@@ -19,10 +19,9 @@ let STATUSES = [];            // ['Energized', 'Issued', 'Not Issued']
 let COLORS = {};              // status -> color hex
 let currentFileName = "";     // name of the active project (for the title block)
 
-let CURRENT_PROJECT = null;   // id of the project being viewed
-let PROJECT_LIST = [];        // [{id, name, ...}] cached for the tab bar
-let lastRevision = -1;        // project revision we last rendered (for polling)
-const LAST_PROJECT_KEY = "nhm_sld_last_project";  // remember selection per browser
+let CURRENT_FILE = null;      // id of the file (diagram) being viewed
+let FILE_LIST = [];           // [{id, name, ...}] cached for the file tab bar
+let lastRevision = -1;        // file revision we last rendered (for polling)
 
 const $  = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -47,8 +46,8 @@ function toast(msg, isError = false) {
 /** Fetch the graph data and (re)build the map. Safe to call repeatedly,
  *  e.g. after a new file is uploaded. */
 function boot() {
-  if (!CURRENT_PROJECT) { showEmptyState(true); $("loading").style.display = "none"; return; }
-  fetch(`/api/project/${CURRENT_PROJECT}/graph`)
+  if (!CURRENT_FILE) { showEmptyState(true); $("loading").style.display = "none"; return; }
+  fetch(`/api/files/${CURRENT_FILE}/graph`)
   .then(r => {
     if (r.status === 401) { window.location = "/login"; return Promise.reject("auth"); }
     return r.json();
@@ -177,17 +176,17 @@ function setupUpload() {
     const file = input.files && input.files[0];
     if (!file) return;
     const suggested = file.name.replace(/\.[^.]+$/, "");
-    const name = (prompt("Name this project:", suggested) || "").trim() || suggested;
+    const name = (prompt("Name this diagram:", suggested) || "").trim() || suggested;
     const form = new FormData();
     form.append("file", file);
     form.append("name", name);
     toast("Uploading " + file.name + "…");
-    fetch("/api/projects", { method: "POST", body: form })
+    fetch(`/api/projects/${PROJECT_ID}/files`, { method: "POST", body: form })
       .then(r => r.json().then(body => ({ ok: r.ok, body })))
       .then(({ ok, body }) => {
         if (!ok) { toast(body.error || "Upload failed", true); return; }
-        toast(`Created "${body.name}" — ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
-        loadProjects(body.id);   // refresh tabs and open the new project
+        toast(`Added "${body.name}" — ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
+        loadFiles(body.id);   // refresh tabs and open the new file
       })
       .catch(err => toast("Upload error: " + err.message, true))
       .finally(() => { input.value = ""; });  // allow re-uploading same file
@@ -195,128 +194,125 @@ function setupUpload() {
 }
 
 // ============================================================
-//  PROJECTS: switcher tabs + live polling
+//  FILES within this project: switcher tabs + live polling
 // ============================================================
-const CAN_MANAGE = (document.getElementById("project-bar")
-  && document.getElementById("project-bar").dataset.canManage === "yes");
+const PROJECT_ID = parseInt(document.body.dataset.projectId, 10);
+const CAN_MANAGE = document.body.dataset.canManage === "yes";
+const LAST_FILE_KEY = `nhm_sld_last_file_${PROJECT_ID}`;
 
-/** Fetch the project list, (re)render the tab bar, and pick a project to
- *  show. `preferId` forces a selection (e.g. just-created project). */
-function loadProjects(preferId) {
-  return fetch("/api/projects")
+/** Fetch this project's files, (re)render the tab bar, and pick one to show.
+ *  `preferId` forces a selection (e.g. a just-uploaded file). */
+function loadFiles(preferId) {
+  return fetch(`/api/projects/${PROJECT_ID}/files`)
     .then(r => { if (r.status === 401) { window.location = "/login"; return Promise.reject("auth"); } return r.json(); })
-    .then(({ projects }) => {
-      PROJECT_LIST = projects || [];
-      renderProjectTabs();
-      if (!PROJECT_LIST.length) {
-        CURRENT_PROJECT = null;
+    .then(({ files }) => {
+      FILE_LIST = files || [];
+      renderFileTabs();
+      if (!FILE_LIST.length) {
+        CURRENT_FILE = null;
         if (cy) { cy.destroy(); cy = null; }
         showEmptyState(true);
         $("loading").style.display = "none";
         return;
       }
-      // Decide which project to open: explicit > current (if still exists)
-      //  > last used in this browser > first in the list.
-      const ids = PROJECT_LIST.map(p => p.id);
+      const ids = FILE_LIST.map(f => f.id);
       let target = preferId;
-      if (!ids.includes(target)) target = CURRENT_PROJECT;
+      if (!ids.includes(target)) target = CURRENT_FILE;
       if (!ids.includes(target)) {
-        const saved = parseInt(localStorage.getItem(LAST_PROJECT_KEY), 10);
-        target = ids.includes(saved) ? saved : PROJECT_LIST[0].id;
+        const saved = parseInt(localStorage.getItem(LAST_FILE_KEY), 10);
+        target = ids.includes(saved) ? saved : FILE_LIST[0].id;
       }
-      if (target !== CURRENT_PROJECT) switchProject(target);
-      else renderProjectTabs();   // keep active highlight in sync
+      if (target !== CURRENT_FILE) switchFile(target);
+      else renderFileTabs();
     })
     .catch(() => {});
 }
 
-function switchProject(pid) {
-  if (pid === CURRENT_PROJECT && cy) return;
-  CURRENT_PROJECT = pid;
-  try { localStorage.setItem(LAST_PROJECT_KEY, String(pid)); } catch (e) {}
-  renderProjectTabs();
+function switchFile(fid) {
+  if (fid === CURRENT_FILE && cy) return;
+  CURRENT_FILE = fid;
+  try { localStorage.setItem(LAST_FILE_KEY, String(fid)); } catch (e) {}
+  renderFileTabs();
   if (cy) { cy.destroy(); cy = null; }
   $("loading").style.display = "block";
   $("loading").textContent = "Building map…";
-  const nm = $("tb-name"); if (nm) nm.value = "";   // let the project name fill in
+  const nm = $("tb-name"); if (nm) nm.value = "";   // let the file name fill in
   boot();
 }
 
-function renderProjectTabs() {
-  const wrap = $("project-tabs");
+function renderFileTabs() {
+  const wrap = $("file-tabs");
   if (!wrap) return;
   wrap.innerHTML = "";
-  if (!PROJECT_LIST.length) {
+  if (!FILE_LIST.length) {
     wrap.appendChild(el("span", { className: "pb-empty",
-      textContent: CAN_MANAGE ? "None yet — click “➕ New project”." : "No projects yet." }));
+      textContent: CAN_MANAGE ? "No files yet — click “➕ Add xlsx”." : "No files in this project yet." }));
     return;
   }
-  PROJECT_LIST.forEach(p => {
+  FILE_LIST.forEach(f => {
     const tab = el("div", {
-      className: "project-tab" + (p.id === CURRENT_PROJECT ? " active" : ""),
-      title: `Created by ${p.created_by || "?"}`,
+      className: "file-tab" + (f.id === CURRENT_FILE ? " active" : ""),
+      title: `Uploaded by ${f.created_by || "?"}`,
     });
-    tab.appendChild(el("span", { textContent: p.name }));
-    tab.onclick = (ev) => { if (!ev.target.classList.contains("pt-act")) switchProject(p.id); };
+    tab.appendChild(el("span", { textContent: f.name }));
+    tab.onclick = (ev) => { if (!ev.target.classList.contains("pt-act")) switchFile(f.id); };
     if (CAN_MANAGE) {
-      const ren = el("span", { className: "pt-act", textContent: "✎", title: "Rename" });
-      ren.onclick = () => renameProject(p);
-      const del = el("span", { className: "pt-act", textContent: "🗑", title: "Delete" });
-      del.onclick = () => deleteProject(p);
-      tab.appendChild(ren);
-      tab.appendChild(del);
+      const ren = el("span", { className: "pt-act", textContent: "✎", title: "Rename file" });
+      ren.onclick = () => renameFile(f);
+      const del = el("span", { className: "pt-act", textContent: "🗑", title: "Delete file" });
+      del.onclick = () => deleteFile(f);
+      tab.appendChild(ren); tab.appendChild(del);
     }
     wrap.appendChild(tab);
   });
 }
 
-function renameProject(p) {
-  const name = (prompt("Rename project:", p.name) || "").trim();
-  if (!name || name === p.name) return;
-  apiJson(`/api/projects/${p.id}`, "PATCH", { name })
-    .then(() => { toast("Renamed to " + name); loadProjects(CURRENT_PROJECT); })
+function renameFile(f) {
+  const name = (prompt("Rename file:", f.name) || "").trim();
+  if (!name || name === f.name) return;
+  apiJson(`/api/files/${f.id}`, "PATCH", { name })
+    .then(() => { toast("Renamed to " + name); loadFiles(CURRENT_FILE); })
     .catch(err => toast(err, true));
 }
 
-function deleteProject(p) {
-  if (!confirm(`Delete project "${p.name}"?\nThis removes its diagram, all status edits and history. This cannot be undone.`)) return;
-  apiJson(`/api/projects/${p.id}`, "DELETE")
+function deleteFile(f) {
+  if (!confirm(`Delete file "${f.name}"?\nThis removes its diagram, status edits and history. This cannot be undone.`)) return;
+  apiJson(`/api/files/${f.id}`, "DELETE")
     .then(() => {
-      toast(`Deleted "${p.name}"`);
-      if (p.id === CURRENT_PROJECT) CURRENT_PROJECT = null;
-      loadProjects();
+      toast(`Deleted "${f.name}"`);
+      if (f.id === CURRENT_FILE) CURRENT_FILE = null;
+      loadFiles();
     })
     .catch(err => toast(err, true));
 }
 
-// ---- Live polling: pick up other users' changes + new/renamed projects ----
+// ---- Live polling: pick up other users' edits + new/renamed/deleted files ----
 const POLL_MS = 5000;
 function startPolling() { setInterval(pollTick, POLL_MS); }
 
 function pollTick() {
-  if (document.hidden) return;   // don't poll a backgrounded tab
-  // 1) Keep the project list fresh (someone may add/rename/delete one).
-  fetch("/api/projects").then(r => r.ok ? r.json() : null).then(res => {
+  if (document.hidden) return;
+  // 1) Keep the file list fresh.
+  fetch(`/api/projects/${PROJECT_ID}/files`).then(r => r.ok ? r.json() : null).then(res => {
     if (!res) return;
-    const fresh = res.projects || [];
-    if (JSON.stringify(fresh.map(p => [p.id, p.name])) !==
-        JSON.stringify(PROJECT_LIST.map(p => [p.id, p.name]))) {
-      PROJECT_LIST = fresh;
-      const ids = fresh.map(p => p.id);
-      if (CURRENT_PROJECT && !ids.includes(CURRENT_PROJECT)) {
-        // Our project was deleted by an admin elsewhere.
-        toast("This project was removed", true);
-        CURRENT_PROJECT = null;
-        loadProjects();
+    const fresh = res.files || [];
+    if (JSON.stringify(fresh.map(f => [f.id, f.name])) !==
+        JSON.stringify(FILE_LIST.map(f => [f.id, f.name]))) {
+      FILE_LIST = fresh;
+      const ids = fresh.map(f => f.id);
+      if (CURRENT_FILE && !ids.includes(CURRENT_FILE)) {
+        toast("This file was removed", true);
+        CURRENT_FILE = null;
+        loadFiles();
       } else {
-        renderProjectTabs();
+        renderFileTabs();
       }
     }
   }).catch(() => {});
 
-  // 2) Pull live status changes for the project we're viewing.
-  if (!CURRENT_PROJECT || !cy) return;
-  fetch(`/api/project/${CURRENT_PROJECT}/state`).then(r => r.ok ? r.json() : null).then(state => {
+  // 2) Pull live status changes for the file we're viewing.
+  if (!CURRENT_FILE || !cy) return;
+  fetch(`/api/files/${CURRENT_FILE}/state`).then(r => r.ok ? r.json() : null).then(state => {
     if (!state || state.revision === lastRevision) return;
     lastRevision = state.revision;
     let changed = 0;
@@ -338,7 +334,7 @@ function pollTick() {
 setupUpload();
 setupTitleBlock();
 setupModals();
-loadProjects();
+loadFiles();
 startPolling();
 
 // -------- History & Users modals --------
@@ -392,11 +388,11 @@ function describeEntry(e) {
 }
 
 function renderHistory(body) {
-  if (!CURRENT_PROJECT) {
+  if (!CURRENT_FILE) {
     body.innerHTML = '<div class="modal-empty">Open a project to see its history.</div>';
     return;
   }
-  fetch(`/api/project/${CURRENT_PROJECT}/history`)
+  fetch(`/api/files/${CURRENT_FILE}/history`)
     .then(r => r.json())
     .then(({ entries }) => {
       if (!entries || !entries.length) {
@@ -686,7 +682,7 @@ function graphStyle() {
 function openPanelDetails(nodeId) {
   highlightNode(nodeId);
 
-  fetch(`/api/project/${CURRENT_PROJECT}/node/` + encodeURIComponent(nodeId))
+  fetch(`/api/files/${CURRENT_FILE}/node/` + encodeURIComponent(nodeId))
     .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)))
     .then(info => renderDetails(info))
     .catch(err => toast("Couldn't load panel details", true));
@@ -912,7 +908,7 @@ function focusEdgeBySn(sn) {
 
 // -------- 6. Status editing --------
 function changeEdgeStatus(sn, newStatus, callback) {
-  fetch(`/api/project/${CURRENT_PROJECT}/edge/${sn}/status`, {
+  fetch(`/api/files/${CURRENT_FILE}/edge/${sn}/status`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({status: newStatus}),
@@ -1077,7 +1073,7 @@ function setupLegendFilter() {
     b.addEventListener("click", () => {
       menu.classList.remove("open");
       const kind = b.dataset.export;
-      if (kind === "xlsx")      window.location = `/api/project/${CURRENT_PROJECT}/export`;
+      if (kind === "xlsx")      window.location = `/api/files/${CURRENT_FILE}/export`;
       else if (kind === "png")  exportPng();
       else if (kind === "pdf")  exportPdf();
     });
@@ -1291,7 +1287,7 @@ function applySldLayout(cy) {
 // ===================================================================
 //  DRAGGABLE BUSBARS + SAVED 2D ARRANGEMENT
 // ===================================================================
-const layoutKey = () => `nhm_sld_layout_v1_${CURRENT_PROJECT || "none"}`;
+const layoutKey = () => `nhm_sld_layout_v1_file_${CURRENT_FILE || "none"}`;
 
 function setupDragging(cy) {
   cy.on("grab", "node[isBoard = 1]", e => {
@@ -1332,9 +1328,22 @@ function restoreLayout(cy) {
   } catch (e) { return false; }
 }
 
+/** "Reset layout" returns the diagram to the freshly-uploaded auto-layout.
+ *  We always (re)bind the button to the CURRENT cy — after switching files
+ *  the old cy is destroyed, so a stale closure would reset nothing (the
+ *  cause of the "collapses to a vertical line" bug). */
+function resetLayout(cy) {
+  try { localStorage.removeItem(layoutKey()); } catch (e) {}
+  buildSections(cy);        // recompute board/leaf tagging + colors
+  applySldLayout(cy);       // exactly what a fresh upload shows
+  cy.fit(undefined, 12);
+}
+
 function setupLayoutControls(cy) {
   const legend = document.querySelector("aside.legend");
-  if (!legend || document.getElementById("reset-layout")) return;
+  if (!legend) return;
+  const existing = document.getElementById("reset-layout");
+  if (existing) { existing.onclick = () => resetLayout(cy); return; }
   const wrap = document.createElement("div");
   wrap.style.marginTop = "18px";
   wrap.innerHTML =
@@ -1346,11 +1355,7 @@ function setupLayoutControls(cy) {
   btn.textContent = "Reset layout";
   btn.style.cssText =
     "font-size:12px;padding:6px 10px;border:1px solid #c3ccd6;border-radius:5px;background:#fff;cursor:pointer";
-  btn.onclick = () => {
-    try { localStorage.removeItem(layoutKey()); } catch (e) {}
-    applySldLayout(cy);
-    cy.fit(undefined, 12);
-  };
+  btn.onclick = () => resetLayout(cy);
   wrap.appendChild(btn);
 
   // #5: a bit more in the legend - what the line styles / bus color mean
