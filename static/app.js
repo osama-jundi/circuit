@@ -93,6 +93,7 @@ function boot() {
     setupLegendFilter();
     setupDetailsClose();
     renderFindings(data.findings);
+    renderStatusSummary(cy);
 
     console.log(
       `Map ready: ${cy.nodes().length} panels, ${cy.edges().length} feeders.`
@@ -102,6 +103,26 @@ function boot() {
   .catch(err => {
     $("loading").textContent = "Failed to load: " + err.message;
     console.error(err);
+  });
+}
+
+/** Show a feeder count next to each status in the legend (a small title-block
+ *  style summary). Recomputed each boot so it tracks the loaded file. */
+function renderStatusSummary(cy) {
+  const counts = {};
+  cy.edges().forEach(e => {
+    const s = e.data("status");
+    counts[s] = (counts[s] || 0) + 1;
+  });
+  document.querySelectorAll(".legend-item").forEach(item => {
+    const status = item.dataset.filter;
+    let badge = item.querySelector(".legend-count");
+    if (!badge) {
+      badge = el("span", { className: "legend-count" });
+      badge.style.cssText = "margin-left:auto;font-size:11px;color:#667085;font-weight:600";
+      item.appendChild(badge);
+    }
+    badge.textContent = counts[status] || 0;
   });
 }
 
@@ -173,60 +194,58 @@ function graphStyle() {
         "text-wrap": "none",
       }
     },
-    // ---- Leaf loads: white box above the bar ----
+    // ---- Leaf loads: box in a row above the bar, filled by feeder status ----
     {
       selector: "node[isBoard = 0]",
       style: {
         "shape": "round-rectangle",
-        "background-color": "#ffffff",
-        "border-color": "#5b6b7b",
-        "border-width": 1,
+        "background-color": "data(loadFill)",
+        "border-color": "data(loadBorder)",
+        "border-width": 2,
         "label": "data(label)",
         "font-size": "10px",
         "text-wrap": "wrap",
-        "text-max-width": "100px",
+        "text-max-width": "96px",
         "text-valign": "center",
         "text-halign": "center",
-        "color": "#2a2a2a",
-        "width": "110px",
-        "height": "66px",
+        "color": "#1c2b38",
+        "width": "104px",
+        "height": "62px",
       }
     },
-    // Leaf type tints (kept from before, applied on top of white)
-    { selector: 'node[isBoard = 0][type = "CAP"]', style: { "background-color": "#fde0e9" } },
     // ---- Section groups: invisible (we color the rail itself) ----
     {
       selector: "node[?isGroup]",
       style: { "background-opacity": 0, "border-opacity": 0, "label": "" }
     },
 
-    // ---- Feeder stubs to loads (radiate out to the square ring) ----
+    // ---- Feeder stubs to loads (short vertical drop, up to the load) ----
     {
       selector: "edge[tgtBoard = 0]",
       style: {
-        "width": 1.6,
-        "line-color": "#8795a3",
-        "curve-style": "straight",
+        "width": 1.4,
+        "line-color": "#5b6b7b",
+        "curve-style": "taxi",
+        "taxi-direction": "upward",
+        "taxi-turn": "50%",
         "target-arrow-shape": "none",
       }
     },
-    // Color the stub by status too (overrides grey)
-    { selector: 'edge[tgtBoard = 0]', style: { "line-color": "data(color)" } },
     {
       selector: 'edge[tgtBoard = 0][status = "Not Issued"]',
       style: { "line-style": "dashed", "line-dash-pattern": [5, 4] }
     },
-    // ---- Inter-board cables (down) ----
+    // ---- Inter-board cables (down) — colored by their SOURCE board ----
     {
       selector: "edge[tgtBoard = 1]",
       style: {
-        "width": 2.4,
-        "line-color": "data(color)",
+        "width": 2.6,
+        "line-color": "data(cableColor)",
         "curve-style": "taxi",
         "taxi-direction": "downward",
-        "taxi-turn": "10px",
+        "taxi-turn": "20px",
         "target-arrow-shape": "triangle",
-        "target-arrow-color": "data(color)",
+        "target-arrow-color": "data(cableColor)",
         "arrow-scale": 0.8,
         "target-endpoint": "0% -50%",
       }
@@ -491,6 +510,13 @@ function changeEdgeStatus(sn, newStatus, callback) {
     const edge = cy.edges(`[sn = ${sn}]`);
     edge.data("status", body.status);
     edge.data("color",  body.color);
+    // Recolor a load box if its feeder status changed (matches the drawing)
+    const tgt = edge.target();
+    if (tgt.data("isBoard") === 0) {
+      tgt.data("loadStatus", body.status);
+      tgt.data("loadBorder", body.color);
+      tgt.data("loadFill", lighten(body.color, 0.72));
+    }
     callback(true);
   })
   .catch(err => {
@@ -623,6 +649,16 @@ const SECTION_PALETTE = [
 
 function isBoardNode(node) { return node.outgoers("node").length > 0; }
 
+/** Blend a #rrggbb hex toward white. t=0 keeps the color, t=1 is white. */
+function lighten(hex, t) {
+  const h = (hex || "#999999").replace("#", "");
+  const r = parseInt(h.substr(0, 2), 16),
+        g = parseInt(h.substr(2, 2), 16),
+        b = parseInt(h.substr(4, 2), 16);
+  const m = c => Math.round(c + (255 - c) * t);
+  return `rgb(${m(r)},${m(g)},${m(b)})`;
+}
+
 function buildSections(cy) {
   // tag boards (feed others) vs leaves; color each board rail. No compound groups
   // so busbars drag freely in 2D.
@@ -630,16 +666,31 @@ function buildSections(cy) {
   cy.nodes().filter(isBoardNode).forEach((b, i) =>
     b.data("bg", SECTION_PALETTE[i % SECTION_PALETTE.length]));
   cy.edges().forEach(e => e.data("tgtBoard", e.target().data("isBoard") === 1 ? 1 : 0));
+
+  // ---- Color each LOAD box by the status of the feeder that feeds it ----
+  // (green = energized, amber = issued, grey = not issued — like the drawing)
+  cy.nodes("[isBoard = 0]").forEach(n => {
+    const inc = n.incomers("edge");
+    const status = inc.length ? inc[0].data("status") : null;
+    const color = (status && COLORS[status]) || "#9aa5b1";
+    n.data("loadStatus", status || "");
+    n.data("loadBorder", color);
+    n.data("loadFill", lighten(color, 0.72));   // soft tint so the label reads
+  });
+
+  // ---- Color each inter-board cable by its SOURCE board's rail color ----
+  // so you can trace a cable back to the switchboard it leaves from.
+  cy.edges("[tgtBoard = 1]").forEach(e => {
+    e.data("cableColor", e.source().data("bg") || "#7c8a99");
+  });
 }
 
 function applySldLayout(cy) {
-  // ---- sizing constants ----
-  const LEAF_W = 110, LEAF_H = 66;
-  const SLOT   = LEAF_W + 28;        // horizontal room each ring load needs
-  const PAD    = 28;                 // gap between the bus and the ring of loads
-  const ROW_GAP = 120;               // vertical gap between cluster boxes
-  const BASE_BAR = 22, MIN_BAR = 160, MAX_BAR = 640, BAR_PER_CONN = 26;
-  const LEFT = 80;
+  // ---- sizing constants (tuned to read like the reference drawing) ----
+  const LEAF_W = 104, LEAF_H = 62, HGAP = 14, STUB = 44;
+  const BASE_BAR = 18, MAX_ROW = 14;     // wrap a board's loads after this many
+  const MIN_BAR = 150, MAX_BAR = 1600, BAR_PER_CONN = 6;
+  const NAME_H = 22, ROW_GAP = 150, LEFT = 80;
 
   const kids       = id => cy.getElementById(id).outgoers("node").map(n => n.id());
   const isBd       = id => cy.getElementById(id).data("isBoard") === 1;
@@ -647,47 +698,23 @@ function applySldLayout(cy) {
   const boardKids  = id => kids(id).filter(isBd);
   const outConns   = id => cy.getElementById(id).outgoers("edge").length;
 
-  // #2: the bus bar gets WIDER the more feeders leave it, so the connectors
-  // spread out side by side instead of stacking on top of each other.
+  // Loads sit in a horizontal row above the bar (wrapping to more rows if a
+  // board has a lot of them, like the wide boards in the drawing).
+  const rowCount   = id => { const n = leaves(id).length;
+                             return n ? Math.ceil(n / MAX_ROW) : 0; };
+  const perRow     = id => { const n = leaves(id).length;
+                             return n ? Math.ceil(n / rowCount(id)) : 0; };
+  const rowWidth   = id => { const c = perRow(id);
+                             return c ? c * LEAF_W + (c - 1) * HGAP : 0; };
+
+  // #2: the bus bar is at least as wide as its row of loads, and grows with the
+  // number of feeders leaving it — so connectors spread out side by side.
   const barWidth  = id => Math.min(MAX_BAR,
-                          Math.max(MIN_BAR, BASE_BAR + outConns(id) * BAR_PER_CONN));
-  const barHeight = id => BASE_BAR + Math.min(30, outConns(id) * 1.8);
-
-  // #3: each board is a square CLUSTER — the bus sits in the middle and its
-  // loads are arranged in a square ring all around it. `ringR` is the
-  // half-size of that square (distance from centre to the ring centre-line).
-  const ringR = id => {
-    const n = leaves(id).length;
-    if (!n) return 0;
-    const perSide = Math.ceil(n / 4);
-    const needForLoads = (perSide * SLOT) / 2;       // keep loads from crowding
-    const needForBar   = barWidth(id) / 2 + LEAF_W / 2 + PAD;  // clear the bar
-    return Math.max(needForLoads, needForBar);
-  };
-  // Full half-height of a cluster's bounding box (centre -> outer edge of loads).
-  const clusterReach = id => {
-    const r = ringR(id);
-    return r ? r + LEAF_H / 2 + PAD : barHeight(id) / 2 + LEAF_H / 2 + PAD;
-  };
-
-  /** Even positions around the perimeter of a square (half-side R) centred at
-   *  (cx, cy). Loads are pushed outward by their half-size so they sit just
-   *  outside the ring line. Returns an array of {x, y}. */
-  function squareRing(n, cx, cy, R) {
-    const out = [];
-    const side = 2 * R, perim = 4 * side;
-    for (let i = 0; i < n; i++) {
-      const t = ((i + 0.5) / n) * perim;
-      const seg = Math.floor(t / side), frac = (t - seg * side) / side;
-      let x, y;
-      if (seg === 0)      { x = -R + side * frac; y = -R; y -= LEAF_H / 2 + PAD; } // top
-      else if (seg === 1) { x =  R; y = -R + side * frac; x += LEAF_W / 2 + PAD; } // right
-      else if (seg === 2) { x =  R - side * frac; y =  R; y += LEAF_H / 2 + PAD; } // bottom
-      else                { x = -R; y =  R - side * frac; x -= LEAF_W / 2 + PAD; } // left
-      out.push({ x: cx + x, y: cy + y });
-    }
-    return out;
-  }
+                    Math.max(MIN_BAR, rowWidth(id), BASE_BAR + outConns(id) * BAR_PER_CONN));
+  const barHeight = id => BASE_BAR + Math.min(30, outConns(id) * 1.2);
+  // Vertical room a board's stack of loads needs above the bar.
+  const stackH    = id => { const r = rowCount(id);
+                            return r ? r * LEAF_H + (r - 1) * HGAP + STUB : 0; };
 
   const boards = cy.nodes("[isBoard = 1]").map(n => n.id());
   const roots  = boards.filter(b => cy.getElementById(b).incomers("node").length === 0);
@@ -702,28 +729,30 @@ function applySldLayout(cy) {
   }
   boards.forEach(b => { if (!seen.has(b)) { seen.add(b); order.push(b); } });
 
-  // Common centre X so every square cluster shares a vertical spine.
-  const maxReach = Math.max(120, ...order.map(clusterReach));
-  const cx = LEFT + maxReach;
+  // All bars share a vertical spine; the widest bar sets the centre line.
+  const maxBar = Math.max(MIN_BAR, ...order.map(barWidth));
+  const cx = LEFT + maxBar / 2;
 
   const pos = {};
-  let curY = 30;
+  let curY = 40;
   order.forEach(id => {
-    const reach = clusterReach(id);
-    curY += reach;                 // move down to this cluster's centre
-    const bw = barWidth(id), bh = barHeight(id);
+    const lv = leaves(id), bw = barWidth(id), bh = barHeight(id);
+    const cols = perRow(id), rows = rowCount(id), rw = rowWidth(id);
     cy.getElementById(id).data("barW", bw);
     cy.getElementById(id).data("barH", bh);
 
-    pos[id] = { x: cx, y: curY };  // bus bar sits at the cluster centre
-
-    const lv = leaves(id);
+    // Loads: one or more centered rows sitting above the bar.
     if (lv.length) {
-      const ring = squareRing(lv.length, cx, curY, ringR(id));
-      lv.forEach((lf, i) => { pos[lf] = ring[i]; });
+      const sx = cx - rw / 2 + LEAF_W / 2, sy = curY + LEAF_H / 2;
+      lv.forEach((lf, i) => {
+        const r = Math.floor(i / cols), c = i % cols;
+        pos[lf] = { x: sx + c * (LEAF_W + HGAP), y: sy + r * (LEAF_H + HGAP) };
+      });
     }
 
-    curY += reach + ROW_GAP;       // leave room before the next cluster
+    const barY = curY + stackH(id) + bh / 2;
+    pos[id] = { x: cx, y: barY };
+    curY = barY + bh / 2 + NAME_H + ROW_GAP;
   });
   cy.nodes("[!isGroup]").forEach(n => { if (pos[n.id()]) n.position(pos[n.id()]); });
 
