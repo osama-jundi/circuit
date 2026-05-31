@@ -1,17 +1,18 @@
 """
 app.py - Flask web server for the SLD viewer.
 
-Now with accounts, roles and a full audit trail:
-  - Login required for everything (Flask session).
-  - role 'admin' : can upload a new workbook and manage users.
-  - role 'user'  : can edit feeder statuses and export, but NOT upload.
-  - Every status change and upload is written to an audit log (who / when /
-    old -> new) and every change is persisted in SQLite, so edits survive a
-    server restart.
+Multi-project + collaborative:
+  - Each uploaded workbook is a **project** (stored in the DB). Everyone can
+    see the list of projects and open any of them.
+  - Admins can create (upload), rename and delete projects. Any logged-in
+    user can edit feeder statuses and export.
+  - Status edits are persisted per (project, feeder) and bump the project's
+    `revision`, so other people's browsers poll /state and pick up changes
+    within a few seconds — multiple users can work the same project live.
+  - Every change is audited (who / when / old -> new / which project).
 
-The uploaded workbook and the per-feeder status overrides live in the
-database (see db.py). On startup we rebuild the in-memory graph (DATA) from
-the latest stored workbook and replay the saved status overrides on top.
+Each project's graph is built lazily from its stored bytes and cached in
+PROJECTS; status edits update both the cache and the DB.
 """
 
 import io
@@ -50,19 +51,19 @@ app.config.update(
     SESSION_COOKIE_SECURE=os.environ.get("SECURE_COOKIES", "0") == "1",
 )
 
-# In-memory graph rebuilt from the DB. None until a workbook is stored.
-DATA = None
-RAW_BYTES = None
+# Lazily-built graph per project: pid -> {"data": graphdict, "raw": bytes,
+# "name": str}. Source of truth for the live diagram within this process.
+PROJECTS = {}
 
 
 def _build_from_bytes(raw: bytes):
-    """Parse workbook bytes into the DATA dict. Raises ValueError on bad data."""
+    """Parse workbook bytes into the graph dict. Raises ValueError on bad data."""
     return graph_module.load_and_build(io.BytesIO(raw), SHEET_NAME)
 
 
-def _apply_overrides(data):
-    """Replay the saved per-feeder status edits on top of a freshly built graph."""
-    overrides = db.get_status_overrides()
+def _apply_overrides(pid, data):
+    """Replay this project's saved status edits on top of a freshly built graph."""
+    overrides = db.get_status_overrides(pid)
     if not overrides:
         return
     df = data["_df"]
@@ -75,27 +76,30 @@ def _apply_overrides(data):
             df.loc[df["SN"] == sn, "Site status"] = st
 
 
-def _load_from_db():
-    """Rebuild DATA / RAW_BYTES from the stored workbook (if any)."""
-    global DATA, RAW_BYTES
-    ds = db.latest_dataset()
-    if not ds:
-        DATA, RAW_BYTES = None, None
-        print("No dataset stored yet — an admin needs to upload one.")
-        return
-    _filename, raw = ds
+def _project(pid):
+    """Return the cached {data, raw, name} for a project, building it on first
+    use. None if the project doesn't exist."""
+    if pid in PROJECTS:
+        return PROJECTS[pid]
+    row = db.get_project(pid)
+    if not row:
+        return None
+    raw = bytes(row["data"])
     try:
         data = _build_from_bytes(raw)
-        _apply_overrides(data)
-        DATA, RAW_BYTES = data, raw
-        print(f"Loaded stored dataset: {DATA['stats']['panels']} panels, "
-              f"{DATA['stats']['feeders']} feeders.")
-    except Exception as e:  # noqa: BLE001 - stored file should be valid, but be safe
-        print(f"Could not rebuild stored dataset ({e}).")
-        DATA, RAW_BYTES = None, None
+    except Exception as e:  # noqa: BLE001
+        print(f"Could not build project {pid}: {e}")
+        return None
+    _apply_overrides(pid, data)
+    PROJECTS[pid] = {"data": data, "raw": raw, "name": row["name"]}
+    return PROJECTS[pid]
 
 
-_load_from_db()
+def _edge_by_sn(data, sn: int):
+    for e in data["cytoscape"]["edges"]:
+        if e["data"]["sn"] == sn:
+            return e
+    return None
 
 
 # ---------------- Auth helpers ----------------
@@ -107,7 +111,6 @@ def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not current_user():
-            # API calls get JSON 401; page requests get redirected to login.
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Not logged in"}), 401
             return redirect(url_for("login", next=request.path))
@@ -125,15 +128,6 @@ def admin_required(fn):
             return jsonify({"error": "Admin only"}), 403
         return fn(*args, **kwargs)
     return wrapper
-
-
-def _edge_by_sn(sn: int):
-    if DATA is None:
-        return None
-    for e in DATA["cytoscape"]["edges"]:
-        if e["data"]["sn"] == sn:
-            return e
-    return None
 
 
 # ---------------- Auth routes ----------------
@@ -163,27 +157,31 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    stats = DATA["stats"] if DATA else None
-    # Warn only when the seeded admin still uses the well-known insecure
-    # password "admin123". A custom ADMIN_PASSWORD set via env is fine.
     default_admin = (current_user()["username"] == db.DEFAULT_ADMIN and
                      db.verify_login(db.DEFAULT_ADMIN, "admin123") is not None)
-    return render_template("index.html", stats=stats, user=current_user(),
+    return render_template("index.html", user=current_user(),
                            default_admin_warning=default_admin)
 
 
-# ---------------- Graph / data API ----------------
 @app.route("/api/me")
 @login_required
 def api_me():
     return jsonify(current_user())
 
 
-@app.route("/api/upload", methods=["POST"])
+# ---------------- Projects ----------------
+@app.route("/api/projects", methods=["GET"])
+@login_required
+def api_projects():
+    """List all projects (everyone can see them)."""
+    projects = [dict(r) for r in db.list_projects()]
+    return jsonify({"projects": projects, "can_manage": current_user()["role"] == "admin"})
+
+
+@app.route("/api/projects", methods=["POST"])
 @admin_required
-def api_upload():
-    """Accept an .xlsx upload (admin only) and rebuild the graph."""
-    global DATA, RAW_BYTES
+def api_create_project():
+    """Upload a workbook as a new project (admin only)."""
     f = request.files.get("file")
     if f is None or f.filename == "":
         return jsonify({"error": "No file uploaded."}), 400
@@ -198,93 +196,151 @@ def api_upload():
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": f"Could not read that file: {e}"}), 400
 
+    name = (request.form.get("name") or "").strip() or f.filename.rsplit(".", 1)[0]
     who = current_user()["username"]
-    db.save_dataset(f.filename, raw, who)   # also clears old status overrides
-    db.log("upload", who, paulos=f.filename,
+    pid = db.create_project(name, f.filename, raw, who)
+    PROJECTS[pid] = {"data": data, "raw": raw, "name": name}
+    db.log("upload", who, project_id=pid, paulos=f.filename,
            new_value=f"{data['stats']['panels']} panels, {data['stats']['feeders']} feeders")
-    DATA, RAW_BYTES = data, raw
-    return jsonify({"ok": True, "stats": DATA["stats"]})
+    return jsonify({"ok": True, "id": pid, "name": name, "stats": data["stats"]})
 
 
-@app.route("/api/graph")
+@app.route("/api/projects/<int:pid>", methods=["PATCH"])
+@admin_required
+def api_rename_project(pid):
+    if not db.project_exists(pid):
+        return jsonify({"error": "No such project"}), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        db.rename_project(pid, body.get("name", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if pid in PROJECTS:
+        PROJECTS[pid]["name"] = body["name"].strip()
+    db.log("project_rename", current_user()["username"], project_id=pid,
+           new_value=body.get("name"))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/projects/<int:pid>", methods=["DELETE"])
+@admin_required
+def api_delete_project(pid):
+    if not db.project_exists(pid):
+        return jsonify({"error": "No such project"}), 404
+    name = PROJECTS.get(pid, {}).get("name")
+    db.delete_project(pid)
+    PROJECTS.pop(pid, None)
+    db.log("project_delete", current_user()["username"], paulos=name)
+    return jsonify({"ok": True})
+
+
+# ---------------- Per-project graph / data ----------------
+@app.route("/api/project/<int:pid>/graph")
 @login_required
-def api_graph():
-    if DATA is None:
-        return jsonify({"loaded": False})
+def api_graph(pid):
+    proj = _project(pid)
+    if proj is None:
+        return jsonify({"loaded": False}), 404
+    data = proj["data"]
     return jsonify({
         "loaded":   True,
-        "elements": DATA["cytoscape"],
-        "findings": DATA["findings"],
-        "stats":    DATA["stats"],
+        "name":     proj["name"],
+        "revision": db.get_revision(pid),
+        "elements": data["cytoscape"],
+        "findings": data["findings"],
+        "stats":    data["stats"],
         "statuses": graph_module.VALID_STATUSES,
         "colors":   graph_module.STATUS_COLORS,
     })
 
 
-@app.route("/api/node/<path:node_id>")
+@app.route("/api/project/<int:pid>/node/<path:node_id>")
 @login_required
-def api_node(node_id):
-    if DATA is None:
+def api_node(pid, node_id):
+    proj = _project(pid)
+    if proj is None:
         abort(404)
+    data = proj["data"]
     incoming, outgoing = [], []
-    for e in DATA["cytoscape"]["edges"]:
+    for e in data["cytoscape"]["edges"]:
         d = e["data"]
         if d["target"] == node_id:
             incoming.append(d)
         if d["source"] == node_id:
             outgoing.append(d)
-
     if not incoming and not outgoing:
-        if not any(n["data"]["id"] == node_id for n in DATA["cytoscape"]["nodes"]):
+        if not any(n["data"]["id"] == node_id for n in data["cytoscape"]["nodes"]):
             abort(404)
-
     return jsonify({"id": node_id, "incoming": incoming, "outgoing": outgoing})
 
 
-@app.route("/api/edge/<int:sn>/status", methods=["POST"])
+@app.route("/api/project/<int:pid>/edge/<int:sn>/status", methods=["POST"])
 @login_required
-def api_set_status(sn):
-    """Change one feeder's status (any logged-in user). Persisted + audited."""
-    if DATA is None:
-        return jsonify({"error": "No data loaded. Ask an admin to upload a file."}), 409
+def api_set_status(pid, sn):
+    """Change one feeder's status (any logged-in user). Persisted + audited,
+    and bumps the project revision so others see it on their next poll."""
+    proj = _project(pid)
+    if proj is None:
+        return jsonify({"error": "No such project"}), 404
     body = request.get_json(silent=True) or {}
     new_status = body.get("status")
     if new_status not in graph_module.VALID_STATUSES:
         return jsonify({"error":
             f"Invalid status. Must be one of: {graph_module.VALID_STATUSES}"}), 400
 
-    edge = _edge_by_sn(sn)
+    data = proj["data"]
+    edge = _edge_by_sn(data, sn)
     if edge is None:
         return jsonify({"error": f"No feeder with SN {sn}"}), 404
 
     old_status = edge["data"]["status"]
     edge["data"]["status"] = new_status
     edge["data"]["color"] = graph_module.STATUS_COLORS[new_status]
-    DATA["_df"].loc[DATA["_df"]["SN"] == sn, "Site status"] = new_status
+    data["_df"].loc[data["_df"]["SN"] == sn, "Site status"] = new_status
 
     who = current_user()["username"]
-    db.set_feeder_status(sn, new_status, who)
+    db.set_feeder_status(pid, sn, new_status, who)
     if old_status != new_status:
-        db.log("status_change", who, sn=sn, paulos=edge["data"].get("paulos"),
-               source=edge["data"].get("source"), target=edge["data"].get("target"),
-               old_value=old_status, new_value=new_status)
+        db.log("status_change", who, project_id=pid, sn=sn,
+               paulos=edge["data"].get("paulos"), source=edge["data"].get("source"),
+               target=edge["data"].get("target"), old_value=old_status, new_value=new_status)
 
     return jsonify({
         "ok": True, "sn": sn, "status": new_status,
         "color": graph_module.STATUS_COLORS[new_status],
+        "revision": db.get_revision(pid),
     })
 
 
-@app.route("/api/export")
+@app.route("/api/project/<int:pid>/state")
 @login_required
-def api_export():
-    if DATA is None or RAW_BYTES is None:
-        return jsonify({"error": "No data loaded."}), 409
+def api_state(pid):
+    """Lightweight polling endpoint: the project revision plus the current
+    status overrides. Clients apply these when the revision changes."""
+    rev = db.get_revision(pid)
+    if rev is None:
+        return jsonify({"error": "No such project"}), 404
+    return jsonify({"revision": rev, "statuses": db.get_status_overrides(pid)})
 
-    df = DATA["_df"]
+
+@app.route("/api/project/<int:pid>/history")
+@login_required
+def api_history(pid):
+    return jsonify({"entries": [dict(r) for r in db.recent_audit(project_id=pid)]})
+
+
+@app.route("/api/project/<int:pid>/export")
+@login_required
+def api_export(pid):
+    proj = _project(pid)
+    if proj is None:
+        return jsonify({"error": "No such project"}), 404
+
+    data, raw = proj["data"], proj["raw"]
+    df = data["_df"]
     status_by_sn = {int(sn): st for sn, st in zip(df["SN"], df["Site status"])}
 
-    wb = load_workbook(io.BytesIO(RAW_BYTES))
+    wb = load_workbook(io.BytesIO(raw))
     ws = wb[SHEET_NAME]
     hdr = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
     sn_col, st_col = hdr["SN"], hdr["Site status"]
@@ -296,20 +352,13 @@ def api_export():
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    db.log("export", current_user()["username"])
+    db.log("export", current_user()["username"], project_id=pid)
+    safe = (proj["name"] or "project").replace(" ", "_")
     return send_file(
         buf, as_attachment=True,
-        download_name="NHM_Feeders_Energization_UPDATED.xlsx",
+        download_name=f"{safe}_UPDATED.xlsx",
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-
-# ---------------- Audit history (any logged-in user) ----------------
-@app.route("/api/history")
-@login_required
-def api_history():
-    rows = db.recent_audit(300)
-    return jsonify({"entries": [dict(r) for r in rows]})
 
 
 # ---------------- User management (admin only) ----------------
@@ -340,7 +389,6 @@ def api_update_user(username):
     me = current_user()["username"]
 
     if "role" in body:
-        # Don't let the last admin demote themselves into a lockout.
         target = db.get_user(username)
         if (target and target["role"] == "admin" and body["role"] != "admin"
                 and db.count_admins() <= 1):

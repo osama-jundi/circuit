@@ -12,9 +12,11 @@ handling, isolated below.
 Tables
 ------
 users         : login accounts (username, password hash, role)
-dataset       : the uploaded workbook bytes (latest row = current dataset)
-feeder_status : current status per feeder SN (survives restart)
-audit_log     : every change (who / when / what), newest first
+projects      : each uploaded workbook = one project (bytes + metadata +
+                a `revision` counter bumped on every status change so clients
+                can cheaply poll for "did anything change?")
+feeder_status : current status per (project, feeder SN); survives restart
+audit_log     : every change (who / when / what / which project), newest first
 meta          : misc key/value (e.g. the Flask secret key)
 
 Connections are short-lived (opened per call) so the threaded dev server
@@ -83,6 +85,23 @@ def _exec(sql, params=(), fetch=None):
         conn.close()
 
 
+def _insert_returning_id(sql, params):
+    """Run an INSERT and return the new row's id (cross-dialect)."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        if USE_PG:
+            cur.execute(sql.replace("?", "%s") + " RETURNING id", params)
+            new_id = cur.fetchone()[0]
+        else:
+            cur.execute(sql, params)
+            new_id = cur.lastrowid
+        conn.commit()
+        return new_id
+    finally:
+        conn.close()
+
+
 def _binary(b: bytes):
     """Wrap raw bytes for a binary column (BYTEA needs this on psycopg2)."""
     return psycopg2.Binary(b) if USE_PG else b
@@ -92,66 +111,155 @@ def _utcnow():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# Per-dialect DDL. Differences: autoincrement key and the binary column type.
-def _schema():
+# ---- Schema introspection (used by the legacy migration) ----
+def _table_exists(name: str) -> bool:
     if USE_PG:
-        pk = "BIGSERIAL PRIMARY KEY"
-        blob = "BYTEA"
+        row = _exec(
+            "SELECT 1 AS x FROM information_schema.tables"
+            " WHERE table_schema = 'public' AND table_name = ?", (name,), fetch="one")
     else:
-        pk = "INTEGER PRIMARY KEY AUTOINCREMENT"
-        blob = "BLOB"
-    return [
-        f"""CREATE TABLE IF NOT EXISTS users (
-            id            {pk},
-            username      TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'user',
-            must_change   INTEGER NOT NULL DEFAULT 0,
-            created_at    TEXT NOT NULL
-        )""",
-        f"""CREATE TABLE IF NOT EXISTS dataset (
-            id          {pk},
-            filename    TEXT NOT NULL,
-            data        {blob} NOT NULL,
-            uploaded_by TEXT,
-            uploaded_at TEXT NOT NULL
-        )""",
-        """CREATE TABLE IF NOT EXISTS feeder_status (
-            sn         INTEGER PRIMARY KEY,
-            status     TEXT NOT NULL,
-            updated_by TEXT,
-            updated_at TEXT NOT NULL
-        )""",
-        f"""CREATE TABLE IF NOT EXISTS audit_log (
-            id        {pk},
-            ts        TEXT NOT NULL,
-            username  TEXT,
-            action    TEXT NOT NULL,
-            sn        INTEGER,
-            paulos    TEXT,
-            source    TEXT,
-            target    TEXT,
-            old_value TEXT,
-            new_value TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS meta (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )""",
-    ]
+        row = _exec(
+            "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,), fetch="one")
+    return row is not None
+
+
+def _column_exists(table: str, column: str) -> bool:
+    if USE_PG:
+        row = _exec(
+            "SELECT 1 AS x FROM information_schema.columns"
+            " WHERE table_name = ? AND column_name = ?", (table, column), fetch="one")
+        return row is not None
+    rows = _exec(f"PRAGMA table_info({table})", fetch="all")
+    return any(r["name"] == column for r in rows)
+
+
+# ---- Per-dialect DDL fragments ----
+def _pk():
+    return "BIGSERIAL PRIMARY KEY" if USE_PG else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def _blob():
+    return "BYTEA" if USE_PG else "BLOB"
+
+
+def _ddl_feeder_status():
+    return """CREATE TABLE IF NOT EXISTS feeder_status (
+        project_id INTEGER NOT NULL,
+        sn         INTEGER NOT NULL,
+        status     TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, sn)
+    )"""
+
+
+def _ddl_audit_log():
+    return f"""CREATE TABLE IF NOT EXISTS audit_log (
+        id         {_pk()},
+        project_id INTEGER,
+        ts         TEXT NOT NULL,
+        username   TEXT,
+        action     TEXT NOT NULL,
+        sn         INTEGER,
+        paulos     TEXT,
+        source     TEXT,
+        target     TEXT,
+        old_value  TEXT,
+        new_value  TEXT
+    )"""
 
 
 def init_db():
-    """Create tables if needed and seed the default admin."""
-    for stmt in _schema():
-        _exec(stmt)
-    row = _exec("SELECT COUNT(*) AS n FROM users", fetch="one")
-    if row["n"] == 0:
+    """Create tables if needed, migrate any old single-dataset DB, and seed
+    the default admin."""
+    _exec(f"""CREATE TABLE IF NOT EXISTS users (
+        id            {_pk()},
+        username      TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'user',
+        must_change   INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL
+    )""")
+    _exec("""CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )""")
+    _exec(f"""CREATE TABLE IF NOT EXISTS projects (
+        id         {_pk()},
+        name       TEXT NOT NULL,
+        filename   TEXT,
+        data       {_blob()} NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        revision   INTEGER NOT NULL DEFAULT 0
+    )""")
+
+    # Upgrade path: an older DB has a single `dataset` table and a
+    # `feeder_status` keyed only by sn. Migrate it into one project so no
+    # data is lost.
+    legacy = _table_exists("feeder_status") and not _column_exists("feeder_status", "project_id")
+    if legacy:
+        _migrate_legacy()
+    else:
+        _exec(_ddl_feeder_status())
+        _exec(_ddl_audit_log())
+
+    if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec(
             "INSERT INTO users (username, password_hash, role, must_change, created_at)"
             " VALUES (?, ?, 'admin', 0, ?)",
             (DEFAULT_ADMIN, generate_password_hash(DEFAULT_ADMIN_PW), _utcnow()),
         )
+
+
+def _migrate_legacy():
+    """Fold the old single-dataset schema into the new project model.
+
+    The current dataset (the most recent upload) becomes one project, and the
+    existing status edits + history are attached to it.
+    """
+    print("Migrating legacy single-dataset database into a project…")
+    pid = None
+    if _table_exists("dataset"):
+        last = _exec("SELECT * FROM dataset ORDER BY id DESC LIMIT 1", fetch="one")
+        if last:
+            name = (last["filename"] or "Imported project")
+            name = name.rsplit(".", 1)[0]
+            pid = _insert_returning_id(
+                "INSERT INTO projects (name, filename, data, created_by, created_at, revision)"
+                " VALUES (?, ?, ?, ?, ?, 0)",
+                (name, last["filename"], _binary(bytes(last["data"])),
+                 last.get("uploaded_by"), last.get("uploaded_at") or _utcnow()),
+            )
+
+    _exec("ALTER TABLE feeder_status RENAME TO feeder_status_old")
+    audit_old = _table_exists("audit_log")
+    if audit_old:
+        _exec("ALTER TABLE audit_log RENAME TO audit_log_old")
+
+    _exec(_ddl_feeder_status())
+    _exec(_ddl_audit_log())
+
+    if pid is not None:
+        _exec(
+            "INSERT INTO feeder_status (project_id, sn, status, updated_by, updated_at)"
+            " SELECT ?, sn, status, updated_by, updated_at FROM feeder_status_old",
+            (pid,))
+        if audit_old:
+            _exec(
+                "INSERT INTO audit_log (project_id, ts, username, action, sn, paulos,"
+                " source, target, old_value, new_value)"
+                " SELECT ?, ts, username, action, sn, paulos, source, target,"
+                " old_value, new_value FROM audit_log_old",
+                (pid,))
+
+    _exec("DROP TABLE feeder_status_old")
+    if audit_old:
+        _exec("DROP TABLE audit_log_old")
+    if _table_exists("dataset"):
+        _exec("DROP TABLE dataset")
+    print("Migration complete.")
 
 
 def get_secret_key() -> str:
@@ -232,52 +340,84 @@ def count_admins() -> int:
     )["n"]
 
 
-# ---------------- Dataset (uploaded workbook) ----------------
-def save_dataset(filename: str, data: bytes, uploaded_by: str):
-    """Store a freshly uploaded workbook and clear old status overrides
-    (the new file is a new baseline)."""
-    _exec(
-        "INSERT INTO dataset (filename, data, uploaded_by, uploaded_at)"
-        " VALUES (?, ?, ?, ?)",
-        (filename, _binary(data), uploaded_by, _utcnow()),
+# ---------------- Projects ----------------
+def list_projects():
+    """Lightweight metadata for the project switcher (no workbook bytes)."""
+    return _exec(
+        "SELECT id, name, filename, created_by, created_at, revision"
+        " FROM projects ORDER BY created_at, id",
+        fetch="all",
     )
-    _exec("DELETE FROM feeder_status")
 
 
-def latest_dataset():
-    """Return (filename, data_bytes) of the current dataset, or None."""
-    row = _exec(
-        "SELECT filename, data FROM dataset ORDER BY id DESC LIMIT 1", fetch="one"
+def get_project(pid: int):
+    """Full project row including the workbook bytes."""
+    return _exec(
+        "SELECT id, name, filename, data, created_by, created_at, revision"
+        " FROM projects WHERE id = ?", (pid,), fetch="one")
+
+
+def project_exists(pid: int) -> bool:
+    return _exec("SELECT 1 AS x FROM projects WHERE id = ?", (pid,), fetch="one") is not None
+
+
+def create_project(name: str, filename: str, data: bytes, created_by: str) -> int:
+    name = (name or filename or "Untitled project").strip()
+    return _insert_returning_id(
+        "INSERT INTO projects (name, filename, data, created_by, created_at, revision)"
+        " VALUES (?, ?, ?, ?, ?, 0)",
+        (name, filename, _binary(data), created_by, _utcnow()),
     )
-    return (row["filename"], bytes(row["data"])) if row else None
 
 
-# ---------------- Feeder status overrides ----------------
-def get_status_overrides() -> dict:
-    """{sn: status} of edits made since the dataset was uploaded."""
-    rows = _exec("SELECT sn, status FROM feeder_status", fetch="all")
+def rename_project(pid: int, name: str):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("project name is required")
+    _exec("UPDATE projects SET name = ? WHERE id = ?", (name, pid))
+
+
+def delete_project(pid: int):
+    _exec("DELETE FROM feeder_status WHERE project_id = ?", (pid,))
+    _exec("DELETE FROM audit_log WHERE project_id = ?", (pid,))
+    _exec("DELETE FROM projects WHERE id = ?", (pid,))
+
+
+def get_revision(pid: int):
+    row = _exec("SELECT revision FROM projects WHERE id = ?", (pid,), fetch="one")
+    return row["revision"] if row else None
+
+
+# ---------------- Feeder status (per project) ----------------
+def get_status_overrides(pid: int) -> dict:
+    """{sn: status} of edits made to this project since it was uploaded."""
+    rows = _exec("SELECT sn, status FROM feeder_status WHERE project_id = ?",
+                 (pid,), fetch="all")
     return {r["sn"]: r["status"] for r in rows}
 
 
-def set_feeder_status(sn: int, status: str, updated_by: str):
-    # ON CONFLICT ... DO UPDATE (upsert) works the same on SQLite and Postgres.
+def set_feeder_status(pid: int, sn: int, status: str, updated_by: str):
+    # Upsert the status, then bump the project revision so other clients
+    # polling for changes notice. ON CONFLICT works on SQLite and Postgres.
     _exec(
-        "INSERT INTO feeder_status (sn, status, updated_by, updated_at)"
-        " VALUES (?, ?, ?, ?)"
-        " ON CONFLICT(sn) DO UPDATE SET"
+        "INSERT INTO feeder_status (project_id, sn, status, updated_by, updated_at)"
+        " VALUES (?, ?, ?, ?, ?)"
+        " ON CONFLICT(project_id, sn) DO UPDATE SET"
         " status = excluded.status,"
         " updated_by = excluded.updated_by,"
         " updated_at = excluded.updated_at",
-        (sn, status, updated_by, _utcnow()),
+        (pid, sn, status, updated_by, _utcnow()),
     )
+    _exec("UPDATE projects SET revision = revision + 1 WHERE id = ?", (pid,))
 
 
 # ---------------- Audit log ----------------
-def log(action: str, username: str, **fields):
+def log(action: str, username: str, project_id=None, **fields):
     _exec(
-        "INSERT INTO audit_log (ts, username, action, sn, paulos, source, target,"
-        " old_value, new_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO audit_log (project_id, ts, username, action, sn, paulos, source,"
+        " target, old_value, new_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            project_id,
             _utcnow(),
             username,
             action,
@@ -291,10 +431,12 @@ def log(action: str, username: str, **fields):
     )
 
 
-def recent_audit(limit: int = 200):
+def recent_audit(project_id=None, limit: int = 300):
+    cols = ("ts, username, action, sn, paulos, source, target, old_value, new_value")
+    if project_id is None:
+        return _exec(
+            f"SELECT {cols} FROM audit_log ORDER BY id DESC LIMIT ?",
+            (limit,), fetch="all")
     return _exec(
-        "SELECT ts, username, action, sn, paulos, source, target, old_value, new_value"
-        " FROM audit_log ORDER BY id DESC LIMIT ?",
-        (limit,),
-        fetch="all",
-    )
+        f"SELECT {cols} FROM audit_log WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+        (project_id, limit), fetch="all")

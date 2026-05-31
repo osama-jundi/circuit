@@ -17,7 +17,12 @@ cytoscape.use(cytoscapeDagre);
 let cy = null;                // the cytoscape instance
 let STATUSES = [];            // ['Energized', 'Issued', 'Not Issued']
 let COLORS = {};              // status -> color hex
-let currentFileName = "";     // name of the last uploaded workbook (for the title block)
+let currentFileName = "";     // name of the active project (for the title block)
+
+let CURRENT_PROJECT = null;   // id of the project being viewed
+let PROJECT_LIST = [];        // [{id, name, ...}] cached for the tab bar
+let lastRevision = -1;        // project revision we last rendered (for polling)
+const LAST_PROJECT_KEY = "nhm_sld_last_project";  // remember selection per browser
 
 const $  = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -42,7 +47,8 @@ function toast(msg, isError = false) {
 /** Fetch the graph data and (re)build the map. Safe to call repeatedly,
  *  e.g. after a new file is uploaded. */
 function boot() {
-  fetch("/api/graph")
+  if (!CURRENT_PROJECT) { showEmptyState(true); $("loading").style.display = "none"; return; }
+  fetch(`/api/project/${CURRENT_PROJECT}/graph`)
   .then(r => {
     if (r.status === 401) { window.location = "/login"; return Promise.reject("auth"); }
     return r.json();
@@ -50,12 +56,14 @@ function boot() {
   .then(data => {
     $("loading").style.display = "none";
 
-    // Nothing uploaded yet -> show the empty-state prompt and stop.
+    // Project missing/unreadable -> show the empty-state prompt and stop.
     if (!data.loaded) {
       showEmptyState(true);
       return;
     }
     showEmptyState(false);
+    lastRevision = data.revision;
+    currentFileName = data.name || "";
     updateStatsText(data.stats);
 
     // Rebuild from scratch if a previous map exists (re-upload).
@@ -168,29 +176,170 @@ function setupUpload() {
   input.addEventListener("change", () => {
     const file = input.files && input.files[0];
     if (!file) return;
+    const suggested = file.name.replace(/\.[^.]+$/, "");
+    const name = (prompt("Name this project:", suggested) || "").trim() || suggested;
     const form = new FormData();
     form.append("file", file);
+    form.append("name", name);
     toast("Uploading " + file.name + "…");
-    fetch("/api/upload", { method: "POST", body: form })
+    fetch("/api/projects", { method: "POST", body: form })
       .then(r => r.json().then(body => ({ ok: r.ok, body })))
       .then(({ ok, body }) => {
         if (!ok) { toast(body.error || "Upload failed", true); return; }
-        currentFileName = file.name.replace(/\.[^.]+$/, "");
-        const nm = $("tb-name"); if (nm) nm.value = currentFileName;  // new file -> new title
-        toast(`Loaded ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
-        $("loading").style.display = "block";
-        $("loading").textContent = "Building map…";
-        boot();
+        toast(`Created "${body.name}" — ${body.stats.panels} panels, ${body.stats.feeders} feeders`);
+        loadProjects(body.id);   // refresh tabs and open the new project
       })
       .catch(err => toast("Upload error: " + err.message, true))
       .finally(() => { input.value = ""; });  // allow re-uploading same file
   });
 }
 
+// ============================================================
+//  PROJECTS: switcher tabs + live polling
+// ============================================================
+const CAN_MANAGE = (document.getElementById("project-bar")
+  && document.getElementById("project-bar").dataset.canManage === "yes");
+
+/** Fetch the project list, (re)render the tab bar, and pick a project to
+ *  show. `preferId` forces a selection (e.g. just-created project). */
+function loadProjects(preferId) {
+  return fetch("/api/projects")
+    .then(r => { if (r.status === 401) { window.location = "/login"; return Promise.reject("auth"); } return r.json(); })
+    .then(({ projects }) => {
+      PROJECT_LIST = projects || [];
+      renderProjectTabs();
+      if (!PROJECT_LIST.length) {
+        CURRENT_PROJECT = null;
+        if (cy) { cy.destroy(); cy = null; }
+        showEmptyState(true);
+        $("loading").style.display = "none";
+        return;
+      }
+      // Decide which project to open: explicit > current (if still exists)
+      //  > last used in this browser > first in the list.
+      const ids = PROJECT_LIST.map(p => p.id);
+      let target = preferId;
+      if (!ids.includes(target)) target = CURRENT_PROJECT;
+      if (!ids.includes(target)) {
+        const saved = parseInt(localStorage.getItem(LAST_PROJECT_KEY), 10);
+        target = ids.includes(saved) ? saved : PROJECT_LIST[0].id;
+      }
+      if (target !== CURRENT_PROJECT) switchProject(target);
+      else renderProjectTabs();   // keep active highlight in sync
+    })
+    .catch(() => {});
+}
+
+function switchProject(pid) {
+  if (pid === CURRENT_PROJECT && cy) return;
+  CURRENT_PROJECT = pid;
+  try { localStorage.setItem(LAST_PROJECT_KEY, String(pid)); } catch (e) {}
+  renderProjectTabs();
+  if (cy) { cy.destroy(); cy = null; }
+  $("loading").style.display = "block";
+  $("loading").textContent = "Building map…";
+  const nm = $("tb-name"); if (nm) nm.value = "";   // let the project name fill in
+  boot();
+}
+
+function renderProjectTabs() {
+  const wrap = $("project-tabs");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!PROJECT_LIST.length) {
+    wrap.appendChild(el("span", { className: "pb-empty",
+      textContent: CAN_MANAGE ? "None yet — click “➕ New project”." : "No projects yet." }));
+    return;
+  }
+  PROJECT_LIST.forEach(p => {
+    const tab = el("div", {
+      className: "project-tab" + (p.id === CURRENT_PROJECT ? " active" : ""),
+      title: `Created by ${p.created_by || "?"}`,
+    });
+    tab.appendChild(el("span", { textContent: p.name }));
+    tab.onclick = (ev) => { if (!ev.target.classList.contains("pt-act")) switchProject(p.id); };
+    if (CAN_MANAGE) {
+      const ren = el("span", { className: "pt-act", textContent: "✎", title: "Rename" });
+      ren.onclick = () => renameProject(p);
+      const del = el("span", { className: "pt-act", textContent: "🗑", title: "Delete" });
+      del.onclick = () => deleteProject(p);
+      tab.appendChild(ren);
+      tab.appendChild(del);
+    }
+    wrap.appendChild(tab);
+  });
+}
+
+function renameProject(p) {
+  const name = (prompt("Rename project:", p.name) || "").trim();
+  if (!name || name === p.name) return;
+  apiJson(`/api/projects/${p.id}`, "PATCH", { name })
+    .then(() => { toast("Renamed to " + name); loadProjects(CURRENT_PROJECT); })
+    .catch(err => toast(err, true));
+}
+
+function deleteProject(p) {
+  if (!confirm(`Delete project "${p.name}"?\nThis removes its diagram, all status edits and history. This cannot be undone.`)) return;
+  apiJson(`/api/projects/${p.id}`, "DELETE")
+    .then(() => {
+      toast(`Deleted "${p.name}"`);
+      if (p.id === CURRENT_PROJECT) CURRENT_PROJECT = null;
+      loadProjects();
+    })
+    .catch(err => toast(err, true));
+}
+
+// ---- Live polling: pick up other users' changes + new/renamed projects ----
+const POLL_MS = 5000;
+function startPolling() { setInterval(pollTick, POLL_MS); }
+
+function pollTick() {
+  if (document.hidden) return;   // don't poll a backgrounded tab
+  // 1) Keep the project list fresh (someone may add/rename/delete one).
+  fetch("/api/projects").then(r => r.ok ? r.json() : null).then(res => {
+    if (!res) return;
+    const fresh = res.projects || [];
+    if (JSON.stringify(fresh.map(p => [p.id, p.name])) !==
+        JSON.stringify(PROJECT_LIST.map(p => [p.id, p.name]))) {
+      PROJECT_LIST = fresh;
+      const ids = fresh.map(p => p.id);
+      if (CURRENT_PROJECT && !ids.includes(CURRENT_PROJECT)) {
+        // Our project was deleted by an admin elsewhere.
+        toast("This project was removed", true);
+        CURRENT_PROJECT = null;
+        loadProjects();
+      } else {
+        renderProjectTabs();
+      }
+    }
+  }).catch(() => {});
+
+  // 2) Pull live status changes for the project we're viewing.
+  if (!CURRENT_PROJECT || !cy) return;
+  fetch(`/api/project/${CURRENT_PROJECT}/state`).then(r => r.ok ? r.json() : null).then(state => {
+    if (!state || state.revision === lastRevision) return;
+    lastRevision = state.revision;
+    let changed = 0;
+    Object.entries(state.statuses).forEach(([sn, status]) => {
+      const edge = cy.edges(`[sn = ${parseInt(sn, 10)}]`);
+      if (!edge.empty() && edge.data("status") !== status) {
+        applyStatusToCanvas(parseInt(sn, 10), status, COLORS[status] || "#999");
+        changed++;
+      }
+    });
+    if (changed) {
+      renderStatusSummary(cy);
+      renderTitleBlock(cy);
+      toast(`Updated — ${changed} change${changed > 1 ? "s" : ""} from others`);
+    }
+  }).catch(() => {});
+}
+
 setupUpload();
 setupTitleBlock();
 setupModals();
-boot();
+loadProjects();
+startPolling();
 
 // -------- History & Users modals --------
 function openModal(title, builder) {
@@ -243,7 +392,11 @@ function describeEntry(e) {
 }
 
 function renderHistory(body) {
-  fetch("/api/history")
+  if (!CURRENT_PROJECT) {
+    body.innerHTML = '<div class="modal-empty">Open a project to see its history.</div>';
+    return;
+  }
+  fetch(`/api/project/${CURRENT_PROJECT}/history`)
     .then(r => r.json())
     .then(({ entries }) => {
       if (!entries || !entries.length) {
@@ -533,7 +686,7 @@ function graphStyle() {
 function openPanelDetails(nodeId) {
   highlightNode(nodeId);
 
-  fetch("/api/node/" + encodeURIComponent(nodeId))
+  fetch(`/api/project/${CURRENT_PROJECT}/node/` + encodeURIComponent(nodeId))
     .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)))
     .then(info => renderDetails(info))
     .catch(err => toast("Couldn't load panel details", true));
@@ -759,7 +912,7 @@ function focusEdgeBySn(sn) {
 
 // -------- 6. Status editing --------
 function changeEdgeStatus(sn, newStatus, callback) {
-  fetch(`/api/edge/${sn}/status`, {
+  fetch(`/api/project/${CURRENT_PROJECT}/edge/${sn}/status`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({status: newStatus}),
@@ -771,23 +924,32 @@ function changeEdgeStatus(sn, newStatus, callback) {
       callback(false);
       return;
     }
-    // Update the edge on the canvas
-    const edge = cy.edges(`[sn = ${sn}]`);
-    edge.data("status", body.status);
-    edge.data("color",  body.color);
-    // Recolor a load box if its feeder status changed (matches the drawing)
-    const tgt = edge.target();
-    if (tgt.data("isBoard") === 0) {
-      tgt.data("loadStatus", body.status);
-      tgt.data("loadBorder", body.color);
-      tgt.data("loadFill", lighten(body.color, 0.72));
-    }
+    // Our own change advances the revision; record it so the poller doesn't
+    // mistake it for someone else's edit and re-toast it.
+    if (typeof body.revision === "number") lastRevision = body.revision;
+    applyStatusToCanvas(sn, body.status, body.color);
     callback(true);
   })
   .catch(err => {
     toast("Network error", true);
     callback(false);
   });
+}
+
+/** Paint a feeder's new status onto the diagram (edge + its load box). Used
+ *  both for our own edits and for changes polled from other users. */
+function applyStatusToCanvas(sn, status, color) {
+  if (!cy) return;
+  const edge = cy.edges(`[sn = ${sn}]`);
+  if (edge.empty()) return;
+  edge.data("status", status);
+  edge.data("color",  color);
+  const tgt = edge.target();
+  if (tgt.data("isBoard") === 0) {
+    tgt.data("loadStatus", status);
+    tgt.data("loadBorder", color);
+    tgt.data("loadFill", lighten(color, 0.72));
+  }
 }
 
 /** Right-click-ish behavior: clicking an edge prompts with a tiny picker. */
@@ -915,7 +1077,7 @@ function setupLegendFilter() {
     b.addEventListener("click", () => {
       menu.classList.remove("open");
       const kind = b.dataset.export;
-      if (kind === "xlsx")      window.location = "/api/export";
+      if (kind === "xlsx")      window.location = `/api/project/${CURRENT_PROJECT}/export`;
       else if (kind === "png")  exportPng();
       else if (kind === "pdf")  exportPdf();
     });
@@ -1129,7 +1291,7 @@ function applySldLayout(cy) {
 // ===================================================================
 //  DRAGGABLE BUSBARS + SAVED 2D ARRANGEMENT
 // ===================================================================
-const LAYOUT_KEY = "nhm_sld_layout_v1";
+const layoutKey = () => `nhm_sld_layout_v1_${CURRENT_PROJECT || "none"}`;
 
 function setupDragging(cy) {
   cy.on("grab", "node[isBoard = 1]", e => {
@@ -1151,13 +1313,13 @@ function saveLayout(cy) {
     const ids = cy.nodes("[!isGroup]").map(n => n.id()).sort();
     const positions = {};
     cy.nodes("[!isGroup]").forEach(n => positions[n.id()] = n.position());
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ids, positions }));
+    localStorage.setItem(layoutKey(), JSON.stringify({ ids, positions }));
   } catch (e) { /* storage may be unavailable; ignore */ }
 }
 
 function restoreLayout(cy) {
   try {
-    const raw = localStorage.getItem(LAYOUT_KEY);
+    const raw = localStorage.getItem(layoutKey());
     if (!raw) return false;
     const saved = JSON.parse(raw);
     const cur = cy.nodes("[!isGroup]").map(n => n.id()).sort();
@@ -1185,7 +1347,7 @@ function setupLayoutControls(cy) {
   btn.style.cssText =
     "font-size:12px;padding:6px 10px;border:1px solid #c3ccd6;border-radius:5px;background:#fff;cursor:pointer";
   btn.onclick = () => {
-    try { localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
+    try { localStorage.removeItem(layoutKey()); } catch (e) {}
     applySldLayout(cy);
     cy.fit(undefined, 12);
   };

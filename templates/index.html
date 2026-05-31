@@ -454,6 +454,34 @@
     .mini-btn.ghost { background: #eceef2; color: #344054; }
     .mini-btn.ghost:hover { background: #dde1e7; }
     .modal-empty { color: #98a2b3; font-style: italic; padding: 12px 0; }
+
+    /* ---- Project switcher bar ---- */
+    #project-bar {
+      display: flex; align-items: center; gap: 8px;
+      background: #eef2f7; border-bottom: 1px solid #d8dee6;
+      padding: 5px 12px; overflow-x: auto;
+    }
+    #project-bar .pb-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+      color: #667085; font-weight: 600; flex-shrink: 0;
+    }
+    #project-tabs { display: flex; gap: 6px; align-items: center; }
+    .project-tab {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+      background: #fff; border: 1px solid #d0d5dd; border-radius: 16px;
+      padding: 4px 12px; font-size: 13px; color: #344054; cursor: pointer;
+      white-space: nowrap;
+    }
+    .project-tab:hover { border-color: #2a4d7a; }
+    .project-tab.active {
+      background: #1e3a5f; border-color: #1e3a5f; color: #fff; font-weight: 600;
+    }
+    .project-tab .pt-act {
+      font-size: 11px; opacity: 0.6; padding: 0 2px; border-radius: 3px;
+    }
+    .project-tab .pt-act:hover { opacity: 1; background: rgba(0,0,0,0.12); }
+    .project-tab.active .pt-act:hover { background: rgba(255,255,255,0.25); }
+    #project-bar .pb-empty { font-size: 12px; color: #98a2b3; font-style: italic; }
   </style>
 </head>
 <body data-role="{{ user.role if user else '' }}" data-username="{{ user.username if user else '' }}">
@@ -470,10 +498,10 @@
   </div>
   <input id="upload-input" type="file" accept=".xlsx,.xlsm" style="display:none">
   {% if user and user.role == 'admin' %}
-  <button id="upload-btn" class="upload-btn" title="Upload an xlsx file">⬆ Upload xlsx</button>
+  <button id="upload-btn" class="upload-btn" title="Upload an xlsx as a new project">➕ New project</button>
   <button id="users-btn" class="upload-btn" title="Manage users">👥 Users</button>
   {% endif %}
-  <button id="history-btn" class="upload-btn" title="Change history">🕑 History</button>
+  <button id="history-btn" class="upload-btn" title="Change history for this project">🕑 History</button>
   <div class="export-wrap">
     <button id="export-btn" class="export-btn" title="Export the diagram">⬇ Export ▾</button>
     <div id="export-menu" class="export-menu">
@@ -499,6 +527,11 @@
   ⚠ You're using the default admin password. Open <strong>👥 Users</strong> and change it.
 </div>
 {% endif %}
+
+<div id="project-bar" data-can-manage="{{ 'yes' if user and user.role == 'admin' else 'no' }}">
+  <span class="pb-label">Projects:</span>
+  <div id="project-tabs"></div>
+</div>
 
 <details id="findings">
   <summary id="findings-summary">Data findings</summary>
@@ -531,10 +564,10 @@
   <div id="cy">
     <div id="loading">Loading map…</div>
     <div id="empty-state" style="display:none">
-      <h2>No file loaded</h2>
-      <p>Upload your feeders <strong>.xlsx</strong> file to build the single-line diagram.
+      <h2>No projects yet</h2>
+      <p>Upload a feeders <strong>.xlsx</strong> file to start a new project.
          It must have an "Energization" sheet with the expected columns.</p>
-      <button id="empty-upload-btn">⬆ Upload xlsx</button>
+      <button id="empty-upload-btn">➕ New project</button>
     </div>
 
     <div id="titleblock">
