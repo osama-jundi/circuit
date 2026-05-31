@@ -486,6 +486,66 @@ def api_set_status(fid, sn):
                     "color": graph_module.STATUS_COLORS[new_status], "revision": db.get_revision(fid)})
 
 
+@app.route("/api/files/<int:fid>/bulk-status", methods=["POST"])
+@login_required
+def api_bulk_status(fid):
+    """Set the same status on many feeders at once (e.g. energize a whole board)."""
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    body = request.get_json(silent=True) or {}
+    new_status = body.get("status")
+    sns = body.get("sns") or []
+    if new_status not in graph_module.VALID_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of: {graph_module.VALID_STATUSES}"}), 400
+
+    data = proj["data"]
+    who = current_user()["username"]
+    changed = 0
+    for sn in sns:
+        edge = _edge_by_sn(data, sn)
+        if edge is None:
+            continue
+        old_status = edge["data"]["status"]
+        edge["data"]["status"] = new_status
+        edge["data"]["color"] = graph_module.STATUS_COLORS[new_status]
+        data["_df"].loc[data["_df"]["SN"] == sn, "Site status"] = new_status
+        db.set_feeder_status(fid, sn, new_status, who)
+        if old_status != new_status:
+            changed += 1
+            db.log("status_change", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+                   paulos=edge["data"].get("paulos"), source=edge["data"].get("source"),
+                   target=edge["data"].get("target"), old_value=old_status, new_value=new_status)
+    _save_summary(fid, data)
+    return jsonify({"ok": True, "changed": changed, "status": new_status,
+                    "color": graph_module.STATUS_COLORS[new_status], "revision": db.get_revision(fid)})
+
+
+@app.route("/api/files/<int:fid>/notes")
+@login_required
+def api_notes(fid):
+    if not db.get_file_meta(fid):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"notes": db.get_notes(fid)})
+
+
+@app.route("/api/files/<int:fid>/edge/<int:sn>/note", methods=["POST"])
+@login_required
+def api_set_note(fid, sn):
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    edge = _edge_by_sn(proj["data"], sn)
+    if edge is None:
+        return jsonify({"error": f"No feeder with SN {sn}"}), 404
+    note = (request.get_json(silent=True) or {}).get("note", "")
+    who = current_user()["username"]
+    db.set_note(fid, sn, note, who)
+    db.log("note", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+           paulos=edge["data"].get("paulos"), new_value=(note or "")[:120])
+    return jsonify({"ok": True, "sn": sn, "note": (note or "").strip(), "by": who})
+
+
 @app.route("/api/files/<int:fid>/state")
 @login_required
 def api_state(fid):

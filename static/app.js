@@ -336,8 +336,19 @@ function pollTick() {
 setupUpload();
 setupTitleBlock();
 setupModals();
+setupLegendToggle();
 loadFiles();
 startPolling();
+
+/** On small screens the legend/key is a slide-in drawer toggled by a button. */
+function setupLegendToggle() {
+  const btn = $("legend-toggle"), legend = document.querySelector("aside.legend");
+  if (!btn || !legend) return;
+  btn.addEventListener("click", () => legend.classList.toggle("open"));
+  // Tapping the map closes the drawer.
+  const cyEl = $("cy");
+  if (cyEl) cyEl.addEventListener("click", () => legend.classList.remove("open"));
+}
 
 // -------- History & Users modals --------
 function openModal(title, builder) {
@@ -762,13 +773,19 @@ function graphStyle() {
 
 
 // -------- 4. Panel details (right sidebar) --------
-function openPanelDetails(nodeId) {
-  highlightNode(nodeId);
+let NOTES = {};          // sn -> {note, by, at} for the current file
+let CURRENT_NODE = null; // id of the panel shown in the details sidebar
 
-  fetch(`/api/files/${CURRENT_FILE}/node/` + encodeURIComponent(nodeId))
-    .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status)))
-    .then(info => renderDetails(info))
-    .catch(err => toast("Couldn't load panel details", true));
+function openPanelDetails(nodeId) {
+  CURRENT_NODE = nodeId;
+  highlightNode(nodeId);
+  Promise.all([
+    fetch(`/api/files/${CURRENT_FILE}/node/` + encodeURIComponent(nodeId))
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))),
+    fetch(`/api/files/${CURRENT_FILE}/notes`).then(r => r.ok ? r.json() : { notes: {} })
+      .catch(() => ({ notes: {} })),
+  ]).then(([info, n]) => { NOTES = n.notes || {}; renderDetails(info); })
+    .catch(() => toast("Couldn't load panel details", true));
 }
 
 function renderDetails(info) {
@@ -781,6 +798,15 @@ function renderDetails(info) {
 
   const body = $("details-body");
   body.innerHTML = "";   // clear previous
+
+  // --- Focus tools ---
+  const tools = el("div", { className: "detail-tools" });
+  const iso = el("button", { className: "tool-btn", textContent: "🔍 Isolate" });
+  iso.onclick = () => isolateNode(info.id);
+  const showAll = el("button", { className: "tool-btn", textContent: "⤢ Show all" });
+  showAll.onclick = () => { if (cy) cy.elements().removeClass("faded"); };
+  tools.appendChild(iso); tools.appendChild(showAll);
+  body.appendChild(tools);
 
   // --- Incoming feeders ---
   body.appendChild(el("h3", {textContent: `Fed From (${info.incoming.length})`}));
@@ -797,14 +823,14 @@ function renderDetails(info) {
     body.appendChild(el("div", {className: "empty",
       textContent: "Nothing — end-of-line panel."}));
   } else {
+    if (info.outgoing.length > 1) body.appendChild(bulkBar(info.outgoing));
     info.outgoing.forEach(e => body.appendChild(feederRow(e, "to")));
   }
 
   const wasClosed = !aside.classList.contains("open");
   aside.classList.add("open");
 
-  // The map canvas just shrank by 320px — tell cytoscape to re-measure
-  // and re-center on the clicked node so it stays visible.
+  // The map canvas just shrank — tell cytoscape to re-measure and re-center.
   if (wasClosed) {
     setTimeout(() => {
       cy.resize();
@@ -813,22 +839,50 @@ function renderDetails(info) {
   }
 }
 
+/** Bulk-edit bar: set the same status on all of a board's outgoing feeders. */
+function bulkBar(outgoing) {
+  const bar = el("div", { className: "bulk-row" });
+  bar.appendChild(el("span", { className: "bulk-label",
+    textContent: `Set all ${outgoing.length} to` }));
+  const sel = el("select");
+  STATUSES.forEach(s => sel.appendChild(el("option", { value: s, textContent: s })));
+  const btn = el("button", { className: "bulk-btn", textContent: "Apply" });
+  btn.onclick = () => bulkSetStatus(outgoing.map(e => e.sn), sel.value);
+  bar.appendChild(sel); bar.appendChild(btn);
+  return bar;
+}
+
+function bulkSetStatus(sns, status) {
+  apiJson(`/api/files/${CURRENT_FILE}/bulk-status`, "POST", { sns, status })
+    .then(res => {
+      if (typeof res.revision === "number") lastRevision = res.revision;
+      sns.forEach(sn => applyStatusToCanvas(sn, status, COLORS[status]));
+      renderStatusSummary(cy); renderTitleBlock(cy);
+      toast(`Set ${res.changed} feeder${res.changed !== 1 ? "s" : ""} → ${status}`);
+      if (CURRENT_NODE) openPanelDetails(CURRENT_NODE);   // refresh the panel
+    })
+    .catch(err => toast(err, true));
+}
+
+/** Fade everything except this board, its feeders and its direct neighbours. */
+function isolateNode(id) {
+  if (!cy) return;
+  const n = cy.getElementById(id);
+  const keep = n.union(n.connectedEdges()).union(n.connectedEdges().connectedNodes());
+  cy.elements().addClass("faded");
+  keep.removeClass("faded");
+}
+
 /** Build one "feeder row" for the details panel. */
 function feederRow(edgeData, direction) {
-  // direction: "from" means this row describes a feeder coming IN (source side)
-  //            "to"   means an outgoing feeder (target side)
   const otherPanel = direction === "from" ? edgeData.source : edgeData.target;
   const label      = direction === "from" ? "← " : "→ ";
 
   const row = el("div", {className: "feeder-row"});
-
-  // Top line: label and panel name
   row.appendChild(el("div", {}, [
     el("span", {className: "arrow", textContent: label}),
     el("span", {className: "target", textContent: otherPanel}),
   ]));
-
-  // Paulos & SN
   row.appendChild(el("div", {
     className: "sn",
     textContent: `SN ${edgeData.sn} · ${edgeData.paulos}`,
@@ -838,7 +892,6 @@ function feederRow(edgeData, direction) {
   const statusRow = el("div", {className: "status-row"});
   const dot = el("span", {className: "status-dot"});
   dot.style.background = COLORS[edgeData.status] || "#999";
-
   const sel = el("select");
   STATUSES.forEach(s => {
     const opt = el("option", {value: s, textContent: s});
@@ -850,19 +903,56 @@ function feederRow(edgeData, direction) {
     changeEdgeStatus(edgeData.sn, newStatus, ok => {
       if (ok) {
         dot.style.background = COLORS[newStatus];
-        edgeData.status = newStatus;   // keep local copy in sync
+        edgeData.status = newStatus;
         toast(`Updated SN ${edgeData.sn} → ${newStatus}`);
       }
     });
   };
-
   statusRow.appendChild(dot);
   statusRow.appendChild(sel);
   row.appendChild(statusRow);
 
-  // Clicking the row jumps to that connection on the map
+  // Note: show existing note or an "add note" affordance; editable inline.
+  const noteWrap = el("div", { className: "note-wrap" });
+  const renderNote = () => {
+    noteWrap.innerHTML = "";
+    const n = NOTES[edgeData.sn];
+    if (n && n.note) {
+      noteWrap.appendChild(el("div", { className: "note-text", title: `by ${n.by || "?"}` },
+        ["📝 " + n.note]));
+      const ed = el("button", { className: "note-edit", textContent: "edit" });
+      ed.onclick = editNote;
+      noteWrap.appendChild(ed);
+    } else {
+      const add = el("button", { className: "note-edit", textContent: "📝 Add note" });
+      add.onclick = editNote;
+      noteWrap.appendChild(add);
+    }
+  };
+  const editNote = () => {
+    noteWrap.innerHTML = "";
+    const ta = el("textarea", { className: "note-input", rows: 2 });
+    ta.value = (NOTES[edgeData.sn] && NOTES[edgeData.sn].note) || "";
+    const save = el("button", { className: "note-save", textContent: "Save" });
+    save.onclick = () => {
+      apiJson(`/api/files/${CURRENT_FILE}/edge/${edgeData.sn}/note`, "POST", { note: ta.value })
+        .then(res => {
+          if (res.note) NOTES[edgeData.sn] = { note: res.note, by: res.by };
+          else delete NOTES[edgeData.sn];
+          renderNote(); toast("Note saved");
+        })
+        .catch(err => toast(err, true));
+    };
+    noteWrap.appendChild(ta); noteWrap.appendChild(save);
+  };
+  renderNote();
+  row.appendChild(noteWrap);
+
+  // Clicking the row (but not its controls) jumps to that connection.
   row.onclick = (ev) => {
-    if (ev.target.tagName === "SELECT") return;   // don't hijack the dropdown
+    const t = ev.target.tagName;
+    if (t === "SELECT" || t === "BUTTON" || t === "TEXTAREA") return;
+    if (ev.target.closest(".note-wrap")) return;
     highlightEdgeBySn(edgeData.sn);
   };
 

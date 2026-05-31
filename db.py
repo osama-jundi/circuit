@@ -166,6 +166,17 @@ def _ddl_feeder_status():
     )"""
 
 
+def _ddl_feeder_notes():
+    return """CREATE TABLE IF NOT EXISTS feeder_notes (
+        file_id    INTEGER NOT NULL,
+        sn         INTEGER NOT NULL,
+        note       TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (file_id, sn)
+    )"""
+
+
 def _ddl_audit_log():
     return f"""CREATE TABLE IF NOT EXISTS audit_log (
         id         {_pk()},
@@ -213,6 +224,8 @@ def init_db():
     # Additive column for the progress dashboard (safe on existing DBs).
     if not _column_exists("files", "summary"):
         _exec("ALTER TABLE files ADD COLUMN summary TEXT")
+    # Per-feeder notes (safe to create on existing DBs).
+    _exec(_ddl_feeder_notes())
 
     if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
@@ -426,6 +439,7 @@ def delete_project(pid):
     fids = [r["id"] for r in _exec("SELECT id FROM files WHERE project_id = ?", (pid,), fetch="all")]
     for fid in fids:
         _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
+        _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
     _exec("DELETE FROM files WHERE project_id = ?", (pid,))
     _exec("DELETE FROM audit_log WHERE project_id = ?", (pid,))
     _exec("DELETE FROM projects WHERE id = ?", (pid,))
@@ -476,6 +490,7 @@ def rename_file(fid, name):
 
 def delete_file(fid):
     _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
+    _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
     _exec("DELETE FROM files WHERE id = ?", (fid,))
 
 
@@ -498,6 +513,27 @@ def set_feeder_status(fid, sn, status, updated_by):
           " updated_at = excluded.updated_at",
           (fid, sn, status, updated_by, _utcnow()))
     _exec("UPDATE files SET revision = revision + 1 WHERE id = ?", (fid,))
+
+
+# ---------------- Feeder notes (per file) ----------------
+def get_notes(fid):
+    rows = _exec("SELECT sn, note, updated_by, updated_at FROM feeder_notes WHERE file_id = ?",
+                 (fid,), fetch="all")
+    return {r["sn"]: {"note": r["note"], "by": r["updated_by"], "at": r["updated_at"]} for r in rows}
+
+
+def set_note(fid, sn, note, updated_by):
+    """Set a feeder note, or delete it when the note is blank."""
+    note = (note or "").strip()
+    if not note:
+        _exec("DELETE FROM feeder_notes WHERE file_id = ? AND sn = ?", (fid, sn))
+        return
+    _exec("INSERT INTO feeder_notes (file_id, sn, note, updated_by, updated_at)"
+          " VALUES (?, ?, ?, ?, ?)"
+          " ON CONFLICT(file_id, sn) DO UPDATE SET"
+          " note = excluded.note, updated_by = excluded.updated_by,"
+          " updated_at = excluded.updated_at",
+          (fid, sn, note, updated_by, _utcnow()))
 
 
 # ---------------- Audit log ----------------
