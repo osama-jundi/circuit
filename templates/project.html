@@ -455,6 +455,20 @@
     .mini-btn.ghost:hover { background: #dde1e7; }
     .modal-empty { color: #98a2b3; font-style: italic; padding: 12px 0; }
 
+    /* ---- Progress dashboard ---- */
+    .dash-head { display: flex; align-items: center; gap: 18px; margin-bottom: 6px; }
+    .dash-pct { font-size: 40px; font-weight: 800; color: #00B050; line-height: 1; min-width: 90px; text-align: center; }
+    .dash-pct-label { font-size: 13px; color: #475467; margin-bottom: 6px; }
+    .dash-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: #e6e9ee; min-width: 160px; }
+    .dash-seg { height: 100%; }
+    .dash-legend { margin-top: 8px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .dash-key { font-size: 12px; color: #475467; display: inline-flex; align-items: center; gap: 5px; }
+    .dash-key i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+    .dash-section { margin: 18px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+      color: #667085; font-weight: 700; border-top: 1px solid #eceef2; padding-top: 12px; }
+    .dash-table td { padding: 6px 8px; border-bottom: 1px solid #f0f2f5; font-size: 12px; vertical-align: middle; }
+    .dash-table td:first-child { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+
     /* ---- Project switcher bar ---- */
     #file-bar {
       display: flex; align-items: center; gap: 8px;
@@ -508,6 +522,7 @@
   {% if user and user.role == 'admin' %}
   <button id="upload-btn" class="upload-btn" title="Upload an xlsx file into this project">➕ Add xlsx</button>
   {% endif %}
+  <button id="dashboard-btn" class="upload-btn" title="Energization progress for this file">📊 Progress</button>
   <button id="history-btn" class="upload-btn" title="Change history for this file">🕑 History</button>
   <div class="export-wrap">
     <button id="export-btn" class="export-btn" title="Export the diagram">⬇ Export ▾</button>

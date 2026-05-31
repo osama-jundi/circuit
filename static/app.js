@@ -360,6 +360,58 @@ function setupModals() {
   if (hBtn) hBtn.addEventListener("click", () => openModal("Change history", renderHistory));
   const uBtn = $("users-btn");          // admin only
   if (uBtn) uBtn.addEventListener("click", () => openModal("Manage users", renderUsers));
+  const dBtn = $("dashboard-btn");
+  if (dBtn) dBtn.addEventListener("click",
+    () => openModal("Energization progress", renderDashboard));
+}
+
+/** Progress dashboard for the current file, computed live from the diagram:
+ *  overall status split + a per-switchboard breakdown. */
+function renderDashboard(body) {
+  if (!cy) { body.innerHTML = '<div class="modal-empty">Open a diagram first.</div>'; return; }
+
+  const seg = (n, total, color, label) => {
+    const pct = total ? (n / total * 100) : 0;
+    return `<div class="dash-seg" style="width:${pct.toFixed(2)}%;background:${color}" title="${label}: ${n}"></div>`;
+  };
+  const bar = (counts, total) =>
+    `<div class="dash-bar">${STATUSES.map(s => seg(counts[s] || 0, total, COLORS[s], s)).join("")}</div>`;
+
+  // Overall counts across every feeder.
+  const overall = {}; let total = 0;
+  cy.edges().forEach(e => { const s = e.data("status"); overall[s] = (overall[s] || 0) + 1; total++; });
+  const en = overall["Energized"] || 0;
+  const pct = total ? Math.round(en / total * 100) : 0;
+
+  const legend = STATUSES.map(s =>
+    `<span class="dash-key"><i style="background:${COLORS[s]}"></i>${s}: <b>${overall[s] || 0}</b></span>`).join("");
+
+  // Per-switchboard: count the feeders LEAVING each board, by status.
+  const boards = cy.nodes("[isBoard = 1]");
+  const rows = boards.map(b => {
+    const out = b.outgoers("edge");
+    const c = {}; let t = 0;
+    out.forEach(e => { const s = e.data("status"); c[s] = (c[s] || 0) + 1; t++; });
+    return { id: b.id(), c, t, en: c["Energized"] || 0 };
+  }).filter(r => r.t > 0).sort((a, b) => (b.en / b.t || 0) - (a.en / a.t || 0));
+
+  const boardRows = rows.map(r => `<tr>
+      <td title="${escapeHtml(r.id)}">${escapeHtml(r.id)}</td>
+      <td style="width:46%">${bar(r.c, r.t)}</td>
+      <td style="text-align:right;white-space:nowrap">${Math.round(r.en / r.t * 100)}% · ${r.en}/${r.t}</td>
+    </tr>`).join("");
+
+  body.innerHTML = `
+    <div class="dash-head">
+      <div class="dash-pct">${pct}%</div>
+      <div>
+        <div class="dash-pct-label">energized — ${en} of ${total} feeders</div>
+        ${bar(overall, total)}
+        <div class="dash-legend">${legend}</div>
+      </div>
+    </div>
+    <div class="dash-section">By switchboard (${rows.length})</div>
+    <table class="grid dash-table"><tbody>${boardRows || '<tr><td>No boards</td></tr>'}</tbody></table>`;
 }
 
 function fmtTime(iso) {

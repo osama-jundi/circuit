@@ -18,6 +18,7 @@ persisted (SQLite locally / PostgreSQL on Render) and audited.
 
 import io
 import os
+import json
 from functools import wraps
 
 try:
@@ -81,6 +82,28 @@ def _apply_overrides(fid, data):
             df.loc[df["SN"] == sn, "Site status"] = st
 
 
+def _summary_from_data(data):
+    """Count feeders by status for the progress dashboard."""
+    counts = {s: 0 for s in graph_module.VALID_STATUSES}
+    total = 0
+    for e in data["cytoscape"]["edges"]:
+        st = e["data"].get("status")
+        if st in counts:
+            counts[st] += 1
+        total += 1
+    counts["total"] = total
+    return counts
+
+
+def _save_summary(fid, data):
+    """Recompute and persist this file's status counts; returns the dict."""
+    summ = _summary_from_data(data)
+    db.set_file_summary(fid, json.dumps(summ))
+    if fid in FILES:
+        FILES[fid]["summary"] = summ
+    return summ
+
+
 def _file(fid):
     """Cached {data, raw, name} for a file, built on first use. None if missing."""
     if fid in FILES:
@@ -96,6 +119,14 @@ def _file(fid):
         return None
     _apply_overrides(fid, data)
     FILES[fid] = {"data": data, "raw": raw, "name": row["name"], "project_id": row["project_id"]}
+    # Backfill the status summary for files uploaded before the dashboard existed.
+    if not row.get("summary"):
+        _save_summary(fid, data)
+    else:
+        try:
+            FILES[fid]["summary"] = json.loads(row["summary"])
+        except (ValueError, TypeError):
+            _save_summary(fid, data)
     return FILES[fid]
 
 
@@ -181,8 +212,25 @@ def api_me():
 @app.route("/api/projects", methods=["GET"])
 @login_required
 def api_projects():
-    return jsonify({"projects": [dict(r) for r in db.list_projects()],
-                    "can_manage": current_user()["role"] == "admin"})
+    # Aggregate each project's feeder status counts across its files, so the
+    # cards can show a progress bar without parsing any workbooks.
+    agg = {}
+    for r in db.all_file_summaries():
+        if not r["summary"]:
+            continue
+        try:
+            s = json.loads(r["summary"])
+        except (ValueError, TypeError):
+            continue
+        a = agg.setdefault(r["project_id"], {})
+        for k, v in s.items():
+            a[k] = a.get(k, 0) + v
+    projects = []
+    for r in db.list_projects():
+        d = dict(r)
+        d["progress"] = agg.get(r["id"], {})
+        projects.append(d)
+    return jsonify({"projects": projects, "can_manage": current_user()["role"] == "admin"})
 
 
 @app.route("/api/projects", methods=["POST"])
@@ -262,6 +310,7 @@ def api_upload_file(pid):
     who = current_user()["username"]
     fid = db.create_file(pid, name, f.filename, raw, who)
     FILES[fid] = {"data": data, "raw": raw, "name": name, "project_id": pid}
+    _save_summary(fid, data)
     db.log("file_upload", who, project_id=pid, file_id=fid, paulos=f.filename,
            new_value=f"{data['stats']['panels']} panels, {data['stats']['feeders']} feeders")
     return jsonify({"ok": True, "id": fid, "name": name, "stats": data["stats"]})
@@ -359,6 +408,7 @@ def api_set_status(fid, sn):
         db.log("status_change", who, project_id=proj["project_id"], file_id=fid, sn=sn,
                paulos=edge["data"].get("paulos"), source=edge["data"].get("source"),
                target=edge["data"].get("target"), old_value=old_status, new_value=new_status)
+    _save_summary(fid, data)   # keep the dashboard counts current
     return jsonify({"ok": True, "sn": sn, "status": new_status,
                     "color": graph_module.STATUS_COLORS[new_status], "revision": db.get_revision(fid)})
 

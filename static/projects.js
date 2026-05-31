@@ -13,6 +13,32 @@ const el = (tag, props = {}, children = []) => {
 };
 const CAN_MANAGE = document.body.dataset.canManage === "yes";
 const MY_NAME = document.body.dataset.username || "";
+const STATUS_COLORS = { "Energized": "#00B050", "Issued": "#FFC000", "Not Issued": "#A6A6A6" };
+const STATUS_ORDER = ["Energized", "Issued", "Not Issued"];
+
+/** A small stacked progress bar + "% energized" line from a counts object. */
+function progressBar(progress) {
+  const wrap = el("div", { className: "prog-wrap" });
+  const total = (progress && progress.total) || 0;
+  const bar = el("div", { className: "prog" });
+  if (total > 0) {
+    STATUS_ORDER.forEach(s => {
+      const n = progress[s] || 0;
+      if (n <= 0) return;
+      const seg = el("div", { className: "prog-seg", title: `${s}: ${n}` });
+      seg.style.cssText = `width:${(n / total * 100).toFixed(2)}%;background:${STATUS_COLORS[s]}`;
+      bar.appendChild(seg);
+    });
+  } else {
+    bar.appendChild(el("div", { className: "prog-seg", style: "width:100%;background:#e6e9ee" }));
+  }
+  wrap.appendChild(bar);
+  const en = (progress && progress["Energized"]) || 0;
+  const pct = total ? Math.round(en / total * 100) : 0;
+  wrap.appendChild(el("div", { className: "prog-label",
+    textContent: total ? `${pct}% energized · ${en}/${total}` : "No diagrams yet" }));
+  return wrap;
+}
 
 function toast(msg, isError = false) {
   const t = $("toast");
@@ -72,6 +98,7 @@ function renderGrid(projects) {
     const fc = p.file_count || 0;
     card.appendChild(el("span", { className: "files",
       textContent: `${fc} ${fc === 1 ? "diagram" : "diagrams"}` }));
+    card.appendChild(progressBar(p.progress || {}));
     card.appendChild(el("div", { className: "meta",
       textContent: `Created by ${p.created_by || "?"} · ${fmtTime(p.created_at)}` }));
     if (CAN_MANAGE) {

@@ -150,7 +150,8 @@ def _ddl_files():
         data       {_blob()} NOT NULL,
         created_by TEXT,
         created_at TEXT NOT NULL,
-        revision   INTEGER NOT NULL DEFAULT 0
+        revision   INTEGER NOT NULL DEFAULT 0,
+        summary    TEXT
     )"""
 
 
@@ -208,6 +209,10 @@ def init_db():
         # Already on the current schema — make sure everything exists.
         _exec(_ddl_projects()); _exec(_ddl_files())
         _exec(_ddl_feeder_status()); _exec(_ddl_audit_log())
+
+    # Additive column for the progress dashboard (safe on existing DBs).
+    if not _column_exists("files", "summary"):
+        _exec("ALTER TABLE files ADD COLUMN summary TEXT")
 
     if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
@@ -429,19 +434,29 @@ def delete_project(pid):
 # ---------------- Files (diagrams within a project) ----------------
 def list_files(pid):
     """File metadata for a project (no workbook bytes)."""
-    return _exec("SELECT id, project_id, name, filename, created_by, created_at, revision"
+    return _exec("SELECT id, project_id, name, filename, created_by, created_at, revision, summary"
                  " FROM files WHERE project_id = ? ORDER BY created_at, id", (pid,), fetch="all")
 
 
 def get_file(fid):
     """Full file row including the workbook bytes."""
-    return _exec("SELECT id, project_id, name, filename, data, created_by, created_at, revision"
+    return _exec("SELECT id, project_id, name, filename, data, created_by, created_at, revision, summary"
                  " FROM files WHERE id = ?", (fid,), fetch="one")
 
 
 def get_file_meta(fid):
-    return _exec("SELECT id, project_id, name, filename, created_by, created_at, revision"
+    return _exec("SELECT id, project_id, name, filename, created_by, created_at, revision, summary"
                  " FROM files WHERE id = ?", (fid,), fetch="one")
+
+
+def set_file_summary(fid, summary_json):
+    """Store the per-status feeder counts (JSON) used by the dashboard."""
+    _exec("UPDATE files SET summary = ? WHERE id = ?", (summary_json, fid))
+
+
+def all_file_summaries():
+    """[{project_id, summary}] across every file — for per-project rollups."""
+    return _exec("SELECT project_id, summary FROM files", fetch="all")
 
 
 def create_file(pid, name, filename, data, created_by):
