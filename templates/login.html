@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sign in — NHM Feeders SLD</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh;
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(135deg, #1e3a5f 0%, #2a4d7a 100%);
+      display: flex; align-items: center; justify-content: center;
+      color: #222;
+    }
+    .card {
+      background: #fff; width: 340px; border-radius: 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+      padding: 28px 26px 24px;
+    }
+    .card h1 { font-size: 19px; margin: 0 0 2px; color: #1e3a5f; }
+    .card .sub { font-size: 12px; color: #667085; margin-bottom: 20px; }
+    label { display: block; font-size: 12px; color: #475467; margin: 12px 0 4px; }
+    input {
+      width: 100%; padding: 9px 11px; font-size: 14px;
+      border: 1px solid #d0d5dd; border-radius: 6px; outline: none;
+    }
+    input:focus { border-color: #2a4d7a; }
+    button {
+      width: 100%; margin-top: 18px; padding: 10px;
+      background: #1e3a5f; color: #fff; border: none; border-radius: 6px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #2a4d7a; }
+    .error {
+      background: #fef3f2; border: 1px solid #fecdca; color: #b42318;
+      font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 12px;
+    }
+    .hint { font-size: 11px; color: #98a2b3; margin-top: 16px; text-align: center; }
+  </style>
+</head>
+<body>
+  <form class="card" method="POST" action="{{ url_for('login') }}">
+    <h1>NHM Feeders — SLD</h1>
+    <div class="sub">Sign in to view and edit the diagram</div>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" autofocus required>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+    <div class="hint">Contact your administrator if you need access.</div>
+  </form>
+</body>
+</html>

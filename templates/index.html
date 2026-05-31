@@ -392,9 +392,71 @@
     .tb-row .tb-val { font-weight: 600; }
     .tb-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; display: inline-block; }
     .tb-more { color: #98a2b3; font-style: italic; padding-top: 2px; }
+
+    /* ---- Logged-in user box ---- */
+    .user-box {
+      flex-shrink: 0; margin-left: 12px; display: flex; align-items: center; gap: 8px;
+      background: rgba(255,255,255,0.12); padding: 4px 6px 4px 12px; border-radius: 20px;
+    }
+    .user-box .user-name { font-size: 13px; font-weight: 600; }
+    .user-box .user-role {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+      background: rgba(255,255,255,0.22); padding: 2px 7px; border-radius: 10px;
+    }
+    .user-box .logout {
+      color: #fff; text-decoration: none; font-size: 15px;
+      width: 24px; height: 24px; line-height: 24px; text-align: center;
+      border-radius: 50%; background: rgba(255,255,255,0.12);
+    }
+    .user-box .logout:hover { background: rgba(255,255,255,0.3); }
+
+    /* ---- Modal (History / Users) ---- */
+    #modal-overlay {
+      position: fixed; inset: 0; background: rgba(15,25,40,0.45);
+      display: none; align-items: center; justify-content: center; z-index: 2000;
+    }
+    #modal-overlay.open { display: flex; }
+    #modal {
+      background: #fff; width: 720px; max-width: 92vw; max-height: 86vh;
+      border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .modal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; background: #1e3a5f; color: #fff;
+    }
+    .modal-head h2 { margin: 0; font-size: 16px; }
+    .modal-head button { background: none; border: none; color: #fff;
+      font-size: 22px; cursor: pointer; line-height: 1; }
+    .modal-body { padding: 16px 18px; overflow-y: auto; }
+    table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+    table.grid th, table.grid td {
+      text-align: left; padding: 7px 8px; border-bottom: 1px solid #eceef2; vertical-align: top;
+    }
+    table.grid th { color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+    table.grid tr:hover td { background: #f7f9fc; }
+    .pill { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .pill.admin { background: #e0ecff; color: #1849a9; }
+    .pill.user  { background: #eceef2; color: #475467; }
+    .change-old { color: #b42318; }
+    .change-new { color: #067647; font-weight: 600; }
+    .form-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;
+      margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #eceef2; }
+    .form-row label { font-size: 11px; color: #475467; display: block; margin-bottom: 3px; }
+    .form-row input, .form-row select {
+      padding: 7px 9px; font-size: 13px; border: 1px solid #d0d5dd; border-radius: 6px; }
+    .form-row button, .mini-btn {
+      padding: 7px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+      border: none; border-radius: 6px; background: #1e3a5f; color: #fff; }
+    .form-row button:hover, .mini-btn:hover { background: #2a4d7a; }
+    .mini-btn.danger { background: #d92d20; }
+    .mini-btn.danger:hover { background: #b42318; }
+    .mini-btn.ghost { background: #eceef2; color: #344054; }
+    .mini-btn.ghost:hover { background: #dde1e7; }
+    .modal-empty { color: #98a2b3; font-style: italic; padding: 12px 0; }
   </style>
 </head>
-<body>
+<body data-role="{{ user.role if user else '' }}" data-username="{{ user.username if user else '' }}">
 
 <header>
   <h1>NHM Feeders — SLD</h1>
@@ -407,7 +469,11 @@
     <div id="search-results" class="search-results"></div>
   </div>
   <input id="upload-input" type="file" accept=".xlsx,.xlsm" style="display:none">
+  {% if user and user.role == 'admin' %}
   <button id="upload-btn" class="upload-btn" title="Upload an xlsx file">⬆ Upload xlsx</button>
+  <button id="users-btn" class="upload-btn" title="Manage users">👥 Users</button>
+  {% endif %}
+  <button id="history-btn" class="upload-btn" title="Change history">🕑 History</button>
   <div class="export-wrap">
     <button id="export-btn" class="export-btn" title="Export the diagram">⬇ Export ▾</button>
     <div id="export-menu" class="export-menu">
@@ -418,7 +484,21 @@
       <button data-export="pdf">Diagram document (.pdf)</button>
     </div>
   </div>
+  {% if user %}
+  <div class="user-box" title="{{ user.role }}">
+    <span class="user-name">{{ user.username }}</span>
+    <span class="user-role">{{ user.role }}</span>
+    <a href="{{ url_for('logout') }}" class="logout" title="Sign out">⎋</a>
+  </div>
+  {% endif %}
 </header>
+
+{% if default_admin_warning %}
+<div id="pw-warning" style="background:#fef3c7;border-bottom:1px solid #fde68a;
+     padding:6px 16px;font-size:12px;color:#78350f">
+  ⚠ You're using the default admin password. Open <strong>👥 Users</strong> and change it.
+</div>
+{% endif %}
 
 <details id="findings">
   <summary id="findings-summary">Data findings</summary>
@@ -477,6 +557,17 @@
 </main>
 
 <div id="toast"></div>
+
+<!-- Modal shell, reused for History and Users -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div class="modal-head">
+      <h2 id="modal-title">Title</h2>
+      <button id="modal-close" title="Close">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

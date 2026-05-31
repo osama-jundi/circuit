@@ -43,7 +43,10 @@ function toast(msg, isError = false) {
  *  e.g. after a new file is uploaded. */
 function boot() {
   fetch("/api/graph")
-  .then(r => r.json())
+  .then(r => {
+    if (r.status === 401) { window.location = "/login"; return Promise.reject("auth"); }
+    return r.json();
+  })
   .then(data => {
     $("loading").style.display = "none";
 
@@ -128,9 +131,23 @@ function renderStatusSummary(cy) {
   });
 }
 
+const MY_ROLE = document.body.dataset.role || "";
+const MY_NAME = document.body.dataset.username || "";
+const IS_ADMIN = MY_ROLE === "admin";
+
 function showEmptyState(show) {
   const es = $("empty-state");
-  if (es) es.style.display = show ? "block" : "none";
+  if (!es) return;
+  es.style.display = show ? "block" : "none";
+  if (show) {
+    // Non-admins can't upload, so tailor the empty-state message/button.
+    const h = es.querySelector("h2"), p = es.querySelector("p"), b = $("empty-upload-btn");
+    if (!IS_ADMIN) {
+      if (h) h.textContent = "No diagram available yet";
+      if (p) p.innerHTML = "An administrator needs to upload the feeders file before it can be viewed.";
+      if (b) b.style.display = "none";
+    }
+  }
 }
 
 function updateStatsText(stats) {
@@ -138,13 +155,15 @@ function updateStatsText(stats) {
   if (t && stats) t.textContent = `${stats.panels} panels · ${stats.feeders} feeders`;
 }
 
-// -------- Upload handling --------
+// -------- Upload handling (admin only) --------
 function setupUpload() {
   const input = $("upload-input");
+  if (!input) return;
   const trigger = () => input.click();
-  $("upload-btn").addEventListener("click", trigger);
+  const uploadBtn = $("upload-btn");           // absent for non-admins
+  if (uploadBtn) uploadBtn.addEventListener("click", trigger);
   const emptyBtn = $("empty-upload-btn");
-  if (emptyBtn) emptyBtn.addEventListener("click", trigger);
+  if (emptyBtn && IS_ADMIN) emptyBtn.addEventListener("click", trigger);
 
   input.addEventListener("change", () => {
     const file = input.files && input.files[0];
@@ -170,7 +189,170 @@ function setupUpload() {
 
 setupUpload();
 setupTitleBlock();
+setupModals();
 boot();
+
+// -------- History & Users modals --------
+function openModal(title, builder) {
+  $("modal-title").textContent = title;
+  const body = $("modal-body");
+  body.innerHTML = '<div class="modal-empty">Loading…</div>';
+  $("modal-overlay").classList.add("open");
+  builder(body);
+}
+function closeModal() { $("modal-overlay").classList.remove("open"); }
+
+function setupModals() {
+  $("modal-close").addEventListener("click", closeModal);
+  $("modal-overlay").addEventListener("click", (e) => {
+    if (e.target === $("modal-overlay")) closeModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+
+  const hBtn = $("history-btn");
+  if (hBtn) hBtn.addEventListener("click", () => openModal("Change history", renderHistory));
+  const uBtn = $("users-btn");          // admin only
+  if (uBtn) uBtn.addEventListener("click", () => openModal("Manage users", renderUsers));
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+/** Human-readable description of one audit entry. */
+function describeEntry(e) {
+  switch (e.action) {
+    case "status_change":
+      return { what: `Feeder SN ${e.sn}` + (e.paulos ? ` (${e.paulos})` : "") +
+                     (e.source && e.target ? ` · ${e.source} → ${e.target}` : ""),
+               detail: `<span class="change-old">${e.old_value || "?"}</span> → ` +
+                       `<span class="change-new">${e.new_value || "?"}</span>` };
+    case "upload":
+      return { what: `Uploaded ${e.paulos || "workbook"}`, detail: e.new_value || "" };
+    case "export":      return { what: "Exported spreadsheet", detail: "" };
+    case "user_create": return { what: `Created user ${e.paulos}`, detail: `role: ${e.new_value}` };
+    case "user_role":   return { what: `Changed role of ${e.paulos}`, detail: `→ ${e.new_value}` };
+    case "user_password": return { what: `Reset password of ${e.paulos}`, detail: "" };
+    case "user_delete": return { what: `Deleted user ${e.paulos}`, detail: "" };
+    default:            return { what: e.action, detail: e.new_value || "" };
+  }
+}
+
+function renderHistory(body) {
+  fetch("/api/history")
+    .then(r => r.json())
+    .then(({ entries }) => {
+      if (!entries || !entries.length) {
+        body.innerHTML = '<div class="modal-empty">No changes recorded yet.</div>';
+        return;
+      }
+      const rows = entries.map(e => {
+        const d = describeEntry(e);
+        return `<tr>
+          <td style="white-space:nowrap">${fmtTime(e.ts)}</td>
+          <td><strong>${escapeHtml(e.username || "—")}</strong></td>
+          <td>${escapeHtml(d.what)}</td>
+          <td>${d.detail}</td>
+        </tr>`;
+      }).join("");
+      body.innerHTML =
+        `<table class="grid"><thead><tr>
+           <th>When</th><th>Who</th><th>Change</th><th>Detail</th>
+         </tr></thead><tbody>${rows}</tbody></table>`;
+    })
+    .catch(() => { body.innerHTML = '<div class="modal-empty">Could not load history.</div>'; });
+}
+
+function renderUsers(body) {
+  fetch("/api/users")
+    .then(r => r.json())
+    .then(({ users }) => {
+      const form = `
+        <div class="form-row">
+          <div><label>Username</label><input id="nu-name" autocomplete="off"></div>
+          <div><label>Password</label><input id="nu-pass" type="password" autocomplete="new-password"></div>
+          <div><label>Role</label>
+            <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
+          </div>
+          <button id="nu-add">Add user</button>
+        </div>`;
+      const rows = (users || []).map(u => {
+        const isMe = u.username === MY_NAME;
+        return `<tr data-user="${escapeHtml(u.username)}">
+          <td><strong>${escapeHtml(u.username)}</strong>${isMe ? " (you)" : ""}</td>
+          <td><span class="pill ${u.role}">${u.role}</span></td>
+          <td style="white-space:nowrap">${fmtTime(u.created_at)}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <button class="mini-btn ghost act-role">${u.role === "admin" ? "Make user" : "Make admin"}</button>
+            <button class="mini-btn ghost act-pw">Reset password</button>
+            <button class="mini-btn danger act-del"${isMe ? " disabled style='opacity:.4;cursor:not-allowed'" : ""}>Delete</button>
+          </td>
+        </tr>`;
+      }).join("");
+      body.innerHTML = form +
+        `<table class="grid"><thead><tr>
+           <th>User</th><th>Role</th><th>Created</th><th></th>
+         </tr></thead><tbody>${rows}</tbody></table>`;
+      wireUserActions(body);
+    })
+    .catch(() => { body.innerHTML = '<div class="modal-empty">Could not load users.</div>'; });
+}
+
+function wireUserActions(body) {
+  $("nu-add").addEventListener("click", () => {
+    const username = $("nu-name").value.trim();
+    const password = $("nu-pass").value;
+    const role = $("nu-role").value;
+    if (!username || !password) { toast("Username and password required", true); return; }
+    apiJson("/api/users", "POST", { username, password, role })
+      .then(() => { toast(`Added ${username}`); renderUsers(body); })
+      .catch(err => toast(err, true));
+  });
+
+  body.querySelectorAll("tr[data-user]").forEach(tr => {
+    const username = tr.dataset.user;
+    const roleBtn = tr.querySelector(".act-role");
+    if (roleBtn) roleBtn.addEventListener("click", () => {
+      const newRole = roleBtn.textContent === "Make admin" ? "admin" : "user";
+      apiJson(`/api/users/${encodeURIComponent(username)}`, "PATCH", { role: newRole })
+        .then(() => { toast(`${username} is now ${newRole}`); renderUsers(body); })
+        .catch(err => toast(err, true));
+    });
+    const pwBtn = tr.querySelector(".act-pw");
+    if (pwBtn) pwBtn.addEventListener("click", () => {
+      const pw = prompt(`New password for ${username}:`);
+      if (!pw) return;
+      apiJson(`/api/users/${encodeURIComponent(username)}`, "PATCH", { password: pw })
+        .then(() => toast(`Password reset for ${username}`))
+        .catch(err => toast(err, true));
+    });
+    const delBtn = tr.querySelector(".act-del");
+    if (delBtn && !delBtn.disabled) delBtn.addEventListener("click", () => {
+      if (!confirm(`Delete user ${username}? This cannot be undone.`)) return;
+      apiJson(`/api/users/${encodeURIComponent(username)}`, "DELETE")
+        .then(() => { toast(`Deleted ${username}`); renderUsers(body); })
+        .catch(err => toast(err, true));
+    });
+  });
+}
+
+/** fetch JSON, rejecting with the server's error message on non-2xx. */
+function apiJson(url, method, payload) {
+  const opts = { method, headers: {} };
+  if (payload !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(payload);
+  }
+  return fetch(url, opts).then(r =>
+    r.json().catch(() => ({})).then(body => {
+      if (!r.ok) throw (body.error || `Request failed (${r.status})`);
+      return body;
+    }));
+}
 
 // -------- Title block (drawing-style corner panel) --------
 function setupTitleBlock() {
