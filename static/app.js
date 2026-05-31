@@ -709,12 +709,99 @@ function setupLegendFilter() {
 }
 
 
-// -------- 8. Export the updated xlsx --------
+// -------- 8. Export: xlsx / png / pdf --------
 // NOTE: this lives at the TOP LEVEL of the file (not inside any function).
-document.getElementById('export-btn').addEventListener('click', () => {
-  // This endpoint returns the file as a download; the page stays put.
-  window.location = '/api/export';
-});
+(function setupExportMenu() {
+  const btn  = $("export-btn");
+  const menu = $("export-menu");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    menu.classList.toggle("open");
+  });
+  document.addEventListener("click", (ev) => {
+    if (!menu.contains(ev.target) && ev.target !== btn) menu.classList.remove("open");
+  });
+  menu.querySelectorAll("button[data-export]").forEach(b => {
+    b.addEventListener("click", () => {
+      menu.classList.remove("open");
+      const kind = b.dataset.export;
+      if (kind === "xlsx")      window.location = "/api/export";
+      else if (kind === "png")  exportPng();
+      else if (kind === "pdf")  exportPdf();
+    });
+  });
+})();
+
+/** A filename stem based on the title-block project name (or a default). */
+function exportBaseName() {
+  const nm = ($("tb-name") && $("tb-name").value.trim()) || currentFileName || "sld-diagram";
+  return nm.replace(/[^\w.-]+/g, "_");
+}
+
+/** Render the whole diagram to a high-res PNG and download it. */
+function exportPng() {
+  if (!cy) { toast("Nothing to export yet", true); return; }
+  try {
+    const png = cy.png({ full: true, scale: 2, bg: "#ffffff" });
+    const a = el("a", { href: png, download: exportBaseName() + ".png" });
+    document.body.appendChild(a); a.click(); a.remove();
+    toast("Exported PNG");
+  } catch (e) {
+    toast("PNG export failed: " + e.message, true);
+  }
+}
+
+/** Export a PDF by opening a print window containing the diagram image plus a
+ *  title strip, then invoking the browser's "Save as PDF". No external libs. */
+function exportPdf() {
+  if (!cy) { toast("Nothing to export yet", true); return; }
+  let dataUrl;
+  try {
+    dataUrl = cy.png({ full: true, scale: 2, bg: "#ffffff" });
+  } catch (e) {
+    toast("PDF export failed: " + e.message, true);
+    return;
+  }
+  const title = (($("tb-name") && $("tb-name").value.trim()) || "Single Line Diagram");
+  const date  = new Date().toLocaleDateString();
+  const counts = {};
+  cy.edges().forEach(e => { const s = e.data("status"); counts[s] = (counts[s] || 0) + 1; });
+  const summary = STATUSES.map(s => `${s}: ${counts[s] || 0}`).join(" · ");
+
+  const w = window.open("", "_blank");
+  if (!w) { toast("Allow pop-ups to export PDF", true); return; }
+  w.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(title)}</title>
+    <style>
+      @page { size: A3 landscape; margin: 10mm; }
+      * { box-sizing: border-box; }
+      body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; color: #1c2b38; }
+      .sheet-head { display: flex; justify-content: space-between; align-items: flex-end;
+                    border-bottom: 2px solid #1e3a5f; padding-bottom: 6px; margin-bottom: 8px; }
+      .sheet-head h1 { font-size: 18px; margin: 0; color: #1e3a5f; }
+      .sheet-head .meta { font-size: 11px; color: #667085; text-align: right; }
+      img { width: 100%; height: auto; border: 1px solid #d0d5dd; }
+    </style></head><body>
+      <div class="sheet-head">
+        <h1>${escapeHtml(title)}</h1>
+        <div class="meta">${escapeHtml(date)}<br>${escapeHtml(summary)}</div>
+      </div>
+      <img src="${dataUrl}">
+    </body></html>`);
+  w.document.close();
+  // Wait for the image to decode before triggering the print dialog.
+  const img = w.document.querySelector("img");
+  const go = () => { w.focus(); w.print(); };
+  if (img && !img.complete) { img.onload = go; img.onerror = go; }
+  else setTimeout(go, 300);
+  toast("Opening print dialog — choose “Save as PDF”");
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
 // ===================================================================
 //  SECTIONS + BUSBAR LAYOUT  (the "look like the PDF" stage)
