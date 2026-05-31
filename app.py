@@ -28,6 +28,7 @@ except ImportError:
 
 from flask import (Flask, render_template, jsonify, request, abort, send_file,
                    session, redirect, url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 from openpyxl import load_workbook
 
 import graph as graph_module
@@ -37,6 +38,11 @@ SHEET_NAME = "Energization"
 
 app = Flask(__name__)
 
+# Render (and most hosts) terminate TLS at a proxy and forward to us over HTTP
+# with X-Forwarded-* headers. ProxyFix makes Flask trust those so it knows the
+# request is really HTTPS — needed for correct redirects and Secure cookies.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 db.init_db()
 app.secret_key = db.get_secret_key()
 
@@ -45,6 +51,13 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("SECURE_COOKIES", "0") == "1",
 )
+
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated health check for the hosting platform."""
+    return jsonify({"status": "ok"})
+
 
 # Lazily-built graph per file: fid -> {"data": graphdict, "raw": bytes, "name": str}
 FILES = {}

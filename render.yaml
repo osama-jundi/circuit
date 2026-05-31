@@ -15,7 +15,10 @@ services:
     # One worker: the in-memory graph is the live source of truth and is kept
     # consistent with the DB within a single process.
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       - key: DATABASE_URL
         fromDatabase:
           name: circuit-db
