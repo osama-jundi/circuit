@@ -1,23 +1,40 @@
 """
-db.py - SQLite persistence + auth helpers for the SLD app.
+db.py - persistence + auth helpers for the SLD app.
+
+Backend
+-------
+If the DATABASE_URL environment variable is set we use **PostgreSQL**
+(e.g. on Render). Otherwise we fall back to a local **SQLite** file, so
+development stays zero-config. The same `?`-style SQL runs against both;
+the only per-dialect bits are the CREATE TABLE statements and binary
+handling, isolated below.
 
 Tables
 ------
-users         : login accounts (username, bcrypt-ish hash, role)
+users         : login accounts (username, password hash, role)
 dataset       : the uploaded workbook bytes (latest row = current dataset)
 feeder_status : current status per feeder SN (survives restart)
 audit_log     : every change (who / when / what), newest first
 meta          : misc key/value (e.g. the Flask secret key)
 
-Everything uses short-lived connections so the threaded dev server is safe.
+Connections are short-lived (opened per call) so the threaded dev server
+and gunicorn workers stay safe.
 """
 
-import sqlite3
 import os
 import secrets
 from datetime import datetime, timezone
 
 from werkzeug.security import generate_password_hash, check_password_hash
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+USE_PG = bool(DATABASE_URL)
+
+if USE_PG:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
 
 DB_PATH = os.environ.get("CIRCUIT_DB", "circuit.db")
 
@@ -30,69 +47,111 @@ DEFAULT_ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "admin123")
 VALID_ROLES = ("admin", "user")
 
 
-def _conn():
+def _connect():
+    if USE_PG:
+        return psycopg2.connect(DATABASE_URL)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     return c
 
 
+def _exec(sql, params=(), fetch=None):
+    """Run one statement and return dict rows.
+
+    `sql` is written with `?` placeholders; we translate them to `%s` for
+    Postgres. `fetch` is None | 'one' | 'all'.
+    """
+    if USE_PG:
+        sql = sql.replace("?", "%s")
+    conn = _connect()
+    try:
+        if USE_PG:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            cur = conn.cursor()
+        cur.execute(sql, params)
+        result = None
+        if fetch == "one":
+            row = cur.fetchone()
+            result = dict(row) if row is not None else None
+        elif fetch == "all":
+            result = [dict(r) for r in cur.fetchall()]
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+def _binary(b: bytes):
+    """Wrap raw bytes for a binary column (BYTEA needs this on psycopg2)."""
+    return psycopg2.Binary(b) if USE_PG else b
+
+
 def _utcnow():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Per-dialect DDL. Differences: autoincrement key and the binary column type.
+def _schema():
+    if USE_PG:
+        pk = "BIGSERIAL PRIMARY KEY"
+        blob = "BYTEA"
+    else:
+        pk = "INTEGER PRIMARY KEY AUTOINCREMENT"
+        blob = "BLOB"
+    return [
+        f"""CREATE TABLE IF NOT EXISTS users (
+            id            {pk},
+            username      TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'user',
+            must_change   INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS dataset (
+            id          {pk},
+            filename    TEXT NOT NULL,
+            data        {blob} NOT NULL,
+            uploaded_by TEXT,
+            uploaded_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS feeder_status (
+            sn         INTEGER PRIMARY KEY,
+            status     TEXT NOT NULL,
+            updated_by TEXT,
+            updated_at TEXT NOT NULL
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS audit_log (
+            id        {pk},
+            ts        TEXT NOT NULL,
+            username  TEXT,
+            action    TEXT NOT NULL,
+            sn        INTEGER,
+            paulos    TEXT,
+            source    TEXT,
+            target    TEXT,
+            old_value TEXT,
+            new_value TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )""",
+    ]
+
+
 def init_db():
-    """Create tables if needed and seed the default admin. Returns nothing."""
-    with _conn() as c:
-        c.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                role          TEXT NOT NULL DEFAULT 'user',
-                must_change   INTEGER NOT NULL DEFAULT 0,
-                created_at    TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS dataset (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename    TEXT NOT NULL,
-                data        BLOB NOT NULL,
-                uploaded_by TEXT,
-                uploaded_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS feeder_status (
-                sn         INTEGER PRIMARY KEY,
-                status     TEXT NOT NULL,
-                updated_by TEXT,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts        TEXT NOT NULL,
-                username  TEXT,
-                action    TEXT NOT NULL,
-                sn        INTEGER,
-                paulos    TEXT,
-                source    TEXT,
-                target    TEXT,
-                old_value TEXT,
-                new_value TEXT
-            );
-            CREATE TABLE IF NOT EXISTS meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
+    """Create tables if needed and seed the default admin."""
+    for stmt in _schema():
+        _exec(stmt)
+    row = _exec("SELECT COUNT(*) AS n FROM users", fetch="one")
+    if row["n"] == 0:
+        _exec(
+            "INSERT INTO users (username, password_hash, role, must_change, created_at)"
+            " VALUES (?, ?, 'admin', 0, ?)",
+            (DEFAULT_ADMIN, generate_password_hash(DEFAULT_ADMIN_PW), _utcnow()),
         )
-        # Seed the default admin once.
-        row = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()
-        if row["n"] == 0:
-            c.execute(
-                "INSERT INTO users (username, password_hash, role, must_change, created_at)"
-                " VALUES (?, ?, 'admin', 0, ?)",
-                (DEFAULT_ADMIN, generate_password_hash(DEFAULT_ADMIN_PW), _utcnow()),
-            )
 
 
 def get_secret_key() -> str:
@@ -105,21 +164,17 @@ def get_secret_key() -> str:
     env_key = os.environ.get("SECRET_KEY")
     if env_key:
         return env_key
-    with _conn() as c:
-        row = c.execute("SELECT value FROM meta WHERE key = 'secret_key'").fetchone()
-        if row:
-            return row["value"]
-        key = secrets.token_hex(32)
-        c.execute("INSERT INTO meta (key, value) VALUES ('secret_key', ?)", (key,))
-        return key
+    row = _exec("SELECT value FROM meta WHERE key = 'secret_key'", fetch="one")
+    if row:
+        return row["value"]
+    key = secrets.token_hex(32)
+    _exec("INSERT INTO meta (key, value) VALUES ('secret_key', ?)", (key,))
+    return key
 
 
 # ---------------- Users ----------------
 def get_user(username: str):
-    with _conn() as c:
-        return c.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
+    return _exec("SELECT * FROM users WHERE username = ?", (username,), fetch="one")
 
 
 def verify_login(username: str, password: str):
@@ -131,10 +186,10 @@ def verify_login(username: str, password: str):
 
 
 def list_users():
-    with _conn() as c:
-        return c.execute(
-            "SELECT id, username, role, must_change, created_at FROM users ORDER BY username"
-        ).fetchall()
+    return _exec(
+        "SELECT id, username, role, must_change, created_at FROM users ORDER BY username",
+        fetch="all",
+    )
 
 
 def create_user(username: str, password: str, role: str):
@@ -143,113 +198,103 @@ def create_user(username: str, password: str, role: str):
     username = username.strip()
     if not username or not password:
         raise ValueError("username and password are required")
-    with _conn() as c:
-        exists = c.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
-        if exists:
-            raise ValueError(f"user '{username}' already exists")
-        c.execute(
-            "INSERT INTO users (username, password_hash, role, must_change, created_at)"
-            " VALUES (?, ?, ?, 0, ?)",
-            (username, generate_password_hash(password), role, _utcnow()),
-        )
+    if _exec("SELECT 1 AS x FROM users WHERE username = ?", (username,), fetch="one"):
+        raise ValueError(f"user '{username}' already exists")
+    _exec(
+        "INSERT INTO users (username, password_hash, role, must_change, created_at)"
+        " VALUES (?, ?, ?, 0, ?)",
+        (username, generate_password_hash(password), role, _utcnow()),
+    )
 
 
 def set_role(username: str, role: str):
     if role not in VALID_ROLES:
         raise ValueError(f"role must be one of {VALID_ROLES}")
-    with _conn() as c:
-        c.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
+    _exec("UPDATE users SET role = ? WHERE username = ?", (role, username))
 
 
 def set_password(username: str, password: str):
     if not password:
         raise ValueError("password is required")
-    with _conn() as c:
-        c.execute(
-            "UPDATE users SET password_hash = ?, must_change = 0 WHERE username = ?",
-            (generate_password_hash(password), username),
-        )
+    _exec(
+        "UPDATE users SET password_hash = ?, must_change = 0 WHERE username = ?",
+        (generate_password_hash(password), username),
+    )
 
 
 def delete_user(username: str):
-    with _conn() as c:
-        c.execute("DELETE FROM users WHERE username = ?", (username,))
+    _exec("DELETE FROM users WHERE username = ?", (username,))
 
 
 def count_admins() -> int:
-    with _conn() as c:
-        return c.execute(
-            "SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"
-        ).fetchone()["n"]
+    return _exec(
+        "SELECT COUNT(*) AS n FROM users WHERE role = 'admin'", fetch="one"
+    )["n"]
 
 
 # ---------------- Dataset (uploaded workbook) ----------------
 def save_dataset(filename: str, data: bytes, uploaded_by: str):
     """Store a freshly uploaded workbook and clear old status overrides
     (the new file is a new baseline)."""
-    with _conn() as c:
-        c.execute(
-            "INSERT INTO dataset (filename, data, uploaded_by, uploaded_at)"
-            " VALUES (?, ?, ?, ?)",
-            (filename, data, uploaded_by, _utcnow()),
-        )
-        c.execute("DELETE FROM feeder_status")
+    _exec(
+        "INSERT INTO dataset (filename, data, uploaded_by, uploaded_at)"
+        " VALUES (?, ?, ?, ?)",
+        (filename, _binary(data), uploaded_by, _utcnow()),
+    )
+    _exec("DELETE FROM feeder_status")
 
 
 def latest_dataset():
     """Return (filename, data_bytes) of the current dataset, or None."""
-    with _conn() as c:
-        row = c.execute(
-            "SELECT filename, data FROM dataset ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        return (row["filename"], bytes(row["data"])) if row else None
+    row = _exec(
+        "SELECT filename, data FROM dataset ORDER BY id DESC LIMIT 1", fetch="one"
+    )
+    return (row["filename"], bytes(row["data"])) if row else None
 
 
 # ---------------- Feeder status overrides ----------------
 def get_status_overrides() -> dict:
     """{sn: status} of edits made since the dataset was uploaded."""
-    with _conn() as c:
-        rows = c.execute("SELECT sn, status FROM feeder_status").fetchall()
-        return {r["sn"]: r["status"] for r in rows}
+    rows = _exec("SELECT sn, status FROM feeder_status", fetch="all")
+    return {r["sn"]: r["status"] for r in rows}
 
 
 def set_feeder_status(sn: int, status: str, updated_by: str):
-    with _conn() as c:
-        c.execute(
-            "INSERT INTO feeder_status (sn, status, updated_by, updated_at)"
-            " VALUES (?, ?, ?, ?)"
-            " ON CONFLICT(sn) DO UPDATE SET"
-            " status = excluded.status,"
-            " updated_by = excluded.updated_by,"
-            " updated_at = excluded.updated_at",
-            (sn, status, updated_by, _utcnow()),
-        )
+    # ON CONFLICT ... DO UPDATE (upsert) works the same on SQLite and Postgres.
+    _exec(
+        "INSERT INTO feeder_status (sn, status, updated_by, updated_at)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(sn) DO UPDATE SET"
+        " status = excluded.status,"
+        " updated_by = excluded.updated_by,"
+        " updated_at = excluded.updated_at",
+        (sn, status, updated_by, _utcnow()),
+    )
 
 
 # ---------------- Audit log ----------------
 def log(action: str, username: str, **fields):
-    with _conn() as c:
-        c.execute(
-            "INSERT INTO audit_log (ts, username, action, sn, paulos, source, target,"
-            " old_value, new_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                _utcnow(),
-                username,
-                action,
-                fields.get("sn"),
-                fields.get("paulos"),
-                fields.get("source"),
-                fields.get("target"),
-                fields.get("old_value"),
-                fields.get("new_value"),
-            ),
-        )
+    _exec(
+        "INSERT INTO audit_log (ts, username, action, sn, paulos, source, target,"
+        " old_value, new_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            _utcnow(),
+            username,
+            action,
+            fields.get("sn"),
+            fields.get("paulos"),
+            fields.get("source"),
+            fields.get("target"),
+            fields.get("old_value"),
+            fields.get("new_value"),
+        ),
+    )
 
 
 def recent_audit(limit: int = 200):
-    with _conn() as c:
-        return c.execute(
-            "SELECT ts, username, action, sn, paulos, source, target, old_value, new_value"
-            " FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    return _exec(
+        "SELECT ts, username, action, sn, paulos, source, target, old_value, new_value"
+        " FROM audit_log ORDER BY id DESC LIMIT ?",
+        (limit,),
+        fetch="all",
+    )
