@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NHM Feeders</string>
+    <!-- The site the app opens. Change this one line to point at a different deploy. -->
+    <string name="app_url">https://circuit-sld.onrender.com</string>
+</resources>
