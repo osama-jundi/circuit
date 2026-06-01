@@ -112,6 +112,7 @@ function boot() {
       `Map ready: ${cy.nodes().length} panels, ${cy.edges().length} feeders.`
     );
     window.cy = cy;
+    updatePresence();           // show who's viewing right away
   })
   .catch(err => {
     $("loading").textContent = "Failed to load: " + err.message;
@@ -334,6 +335,38 @@ function pollTick() {
       renderTitleBlock(cy);
       toast(`Updated — ${changed} change${changed > 1 ? "s" : ""} from others`);
     }
+  }).catch(() => {});
+
+  // 3) Refresh "who's viewing".
+  updatePresence();
+}
+
+const AV_COLORS = ["#1e3a5f", "#0e7490", "#9333ea", "#b45309", "#15803d", "#be123c", "#4338ca"];
+function avatarColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return AV_COLORS[h % AV_COLORS.length];
+}
+
+/** Fetch + render the list of people currently viewing this file. */
+function updatePresence() {
+  if (!CURRENT_FILE) return;
+  fetch(`/api/files/${CURRENT_FILE}/presence`).then(r => r.ok ? r.json() : null).then(p => {
+    if (!p) return;
+    const box = $("presence");
+    if (!box) return;
+    box.innerHTML = "";
+    const others = p.viewers.filter(v => v !== p.you);
+    const label = others.length
+      ? `👁 You + ${others.length} other${others.length > 1 ? "s" : ""}`
+      : "👁 Only you";
+    box.appendChild(el("span", { className: "who", textContent: label }));
+    p.viewers.slice(0, 6).forEach(v => {
+      const av = el("span", { className: "av", textContent: v.slice(0, 2),
+        title: v === p.you ? `${v} (you)` : v });
+      av.style.background = avatarColor(v);
+      box.appendChild(av);
+    });
   }).catch(() => {});
 }
 

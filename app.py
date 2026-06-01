@@ -646,6 +646,27 @@ def api_state(fid):
     return jsonify({"revision": rev, "statuses": db.get_status_overrides(fid)})
 
 
+# ---------------- Presence ("who's viewing") ----------------
+# In-memory registry of who is currently looking at each file. Accurate with
+# our single worker; each client refreshes it on every poll tick.
+PRESENCE = {}
+PRESENCE_TTL = 20      # seconds a viewer stays "present" between pings
+
+
+@app.route("/api/files/<int:fid>/presence")
+@login_required
+def api_presence(fid):
+    now = time.time()
+    me = current_user()["username"]
+    book = PRESENCE.setdefault(fid, {})
+    book[me] = now
+    for u in [u for u, t in book.items() if now - t > PRESENCE_TTL]:
+        del book[u]
+    if not book:
+        PRESENCE.pop(fid, None)
+    return jsonify({"viewers": sorted(book.keys()), "you": me})
+
+
 @app.route("/api/files/<int:fid>/history")
 @login_required
 def api_history(fid):

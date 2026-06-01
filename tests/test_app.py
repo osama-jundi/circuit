@@ -181,6 +181,22 @@ def test_photo_limit_per_feeder(admin):
                   content_type="multipart/form-data", headers=h).status_code == 400
 
 
+# ---------------- Presence ----------------
+def test_presence_lists_viewers(admin, appmod):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    # admin views the file
+    r = c.get(f"/api/files/{fid}/presence").get_json()
+    assert r["you"] == "admin" and "admin" in r["viewers"]
+    # a second user views it too
+    c.post("/api/users", json={"username": "bob", "password": "pw", "role": "user"}, headers=h)
+    bob = appmod.app.test_client()
+    login(bob, "bob", "pw")
+    bob.get(f"/api/files/{fid}/presence")
+    viewers = c.get(f"/api/files/{fid}/presence").get_json()["viewers"]
+    assert "admin" in viewers and "bob" in viewers
+
+
 # ---------------- Account ----------------
 def test_self_password_change(admin, appmod):
     c, h = admin
