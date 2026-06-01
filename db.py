@@ -177,6 +177,19 @@ def _ddl_feeder_notes():
     )"""
 
 
+def _ddl_feeder_photos():
+    return f"""CREATE TABLE IF NOT EXISTS feeder_photos (
+        id          {_pk()},
+        file_id     INTEGER NOT NULL,
+        sn          INTEGER NOT NULL,
+        mimetype    TEXT NOT NULL,
+        data        {_blob()} NOT NULL,
+        caption     TEXT,
+        uploaded_by TEXT,
+        uploaded_at TEXT NOT NULL
+    )"""
+
+
 def _ddl_audit_log():
     return f"""CREATE TABLE IF NOT EXISTS audit_log (
         id         {_pk()},
@@ -224,8 +237,9 @@ def init_db():
     # Additive column for the progress dashboard (safe on existing DBs).
     if not _column_exists("files", "summary"):
         _exec("ALTER TABLE files ADD COLUMN summary TEXT")
-    # Per-feeder notes (safe to create on existing DBs).
+    # Per-feeder notes and photos (safe to create on existing DBs).
     _exec(_ddl_feeder_notes())
+    _exec(_ddl_feeder_photos())
 
     if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
@@ -440,6 +454,7 @@ def delete_project(pid):
     for fid in fids:
         _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
         _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
+        _exec("DELETE FROM feeder_photos WHERE file_id = ?", (fid,))
     _exec("DELETE FROM files WHERE project_id = ?", (pid,))
     _exec("DELETE FROM audit_log WHERE project_id = ?", (pid,))
     _exec("DELETE FROM projects WHERE id = ?", (pid,))
@@ -491,6 +506,7 @@ def rename_file(fid, name):
 def delete_file(fid):
     _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
     _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
+    _exec("DELETE FROM feeder_photos WHERE file_id = ?", (fid,))
     _exec("DELETE FROM files WHERE id = ?", (fid,))
 
 
@@ -534,6 +550,46 @@ def set_note(fid, sn, note, updated_by):
           " note = excluded.note, updated_by = excluded.updated_by,"
           " updated_at = excluded.updated_at",
           (fid, sn, note, updated_by, _utcnow()))
+
+
+# ---------------- Feeder photos (per file) ----------------
+def add_photo(file_id, sn, mimetype, data, caption, uploaded_by):
+    return _insert_returning_id(
+        "INSERT INTO feeder_photos (file_id, sn, mimetype, data, caption, uploaded_by, uploaded_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (file_id, sn, mimetype, _binary(data), (caption or "").strip() or None,
+         uploaded_by, _utcnow()))
+
+
+def count_photos(file_id, sn):
+    return _exec("SELECT COUNT(*) AS n FROM feeder_photos WHERE file_id = ? AND sn = ?",
+                 (file_id, sn), fetch="one")["n"]
+
+
+def list_photos(file_id):
+    """Photo metadata for a whole file, grouped by feeder SN (no image bytes)."""
+    rows = _exec("SELECT id, sn, caption, uploaded_by, uploaded_at FROM feeder_photos"
+                 " WHERE file_id = ? ORDER BY id", (file_id,), fetch="all")
+    out = {}
+    for r in rows:
+        out.setdefault(r["sn"], []).append(
+            {"id": r["id"], "caption": r["caption"], "by": r["uploaded_by"], "at": r["uploaded_at"]})
+    return out
+
+
+def get_photo(photo_id):
+    """Full photo row including image bytes (for serving)."""
+    return _exec("SELECT id, file_id, sn, mimetype, data, uploaded_by FROM feeder_photos"
+                 " WHERE id = ?", (photo_id,), fetch="one")
+
+
+def get_photo_meta(photo_id):
+    return _exec("SELECT id, file_id, sn, caption, uploaded_by FROM feeder_photos"
+                 " WHERE id = ?", (photo_id,), fetch="one")
+
+
+def delete_photo(photo_id):
+    _exec("DELETE FROM feeder_photos WHERE id = ?", (photo_id,))
 
 
 # ---------------- Audit log ----------------

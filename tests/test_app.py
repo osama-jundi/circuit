@@ -131,6 +131,56 @@ def test_notes_set_get_clear(admin):
     assert "3" not in c.get(f"/api/files/{fid}/notes").get_json()["notes"]
 
 
+# ---------------- Photos ----------------
+def _png_bytes():
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), (10, 120, 200)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_photo_upload_list_serve_delete(admin):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    # upload
+    r = c.post(f"/api/files/{fid}/edge/3/photos",
+               data={"photo": (io.BytesIO(_png_bytes()), "site.png"), "caption": "north wall"},
+               content_type="multipart/form-data", headers=h).get_json()
+    assert r["ok"]
+    photo_id = r["id"]
+    # listed under the feeder
+    photos = c.get(f"/api/files/{fid}/photos").get_json()["photos"]
+    assert photos["3"][0]["id"] == photo_id and photos["3"][0]["caption"] == "north wall"
+    # served as a (re-encoded JPEG) image
+    img = c.get(f"/api/photos/{photo_id}")
+    assert img.status_code == 200 and img.mimetype == "image/jpeg" and len(img.data) > 0
+    # delete
+    assert c.delete(f"/api/photos/{photo_id}", headers=h).get_json()["ok"]
+    assert c.get(f"/api/files/{fid}/photos").get_json()["photos"] == {}
+
+
+def test_photo_rejects_non_image(admin):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    r = c.post(f"/api/files/{fid}/edge/3/photos",
+               data={"photo": (io.BytesIO(b"not an image"), "x.png")},
+               content_type="multipart/form-data", headers=h)
+    assert r.status_code == 400
+
+
+def test_photo_limit_per_feeder(admin):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    for _ in range(6):
+        assert c.post(f"/api/files/{fid}/edge/3/photos",
+                      data={"photo": (io.BytesIO(_png_bytes()), "p.png")},
+                      content_type="multipart/form-data", headers=h).status_code == 200
+    # 7th is rejected
+    assert c.post(f"/api/files/{fid}/edge/3/photos",
+                  data={"photo": (io.BytesIO(_png_bytes()), "p.png")},
+                  content_type="multipart/form-data", headers=h).status_code == 400
+
+
 # ---------------- Account ----------------
 def test_self_password_change(admin, appmod):
     c, h = admin

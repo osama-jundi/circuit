@@ -38,7 +38,15 @@ from openpyxl import load_workbook
 import graph as graph_module
 import db
 
+try:
+    from PIL import Image, ImageOps
+    _PIL = True
+except ImportError:                # photos still work, just stored as-is
+    _PIL = False
+
 SHEET_NAME = "Energization"
+MAX_PHOTOS_PER_FEEDER = 6
+PHOTO_MAX_DIM = 1400               # downscale longest side to this many px
 
 app = Flask(__name__)
 
@@ -57,7 +65,27 @@ app.config.update(
     # Sign users out after this much inactivity (the cookie expiry slides
     # forward on each request, so it's effectively an idle timeout).
     PERMANENT_SESSION_LIFETIME=timedelta(hours=int(os.environ.get("SESSION_HOURS", "8"))),
+    # Cap request size (workbooks + photos). 25 MB is plenty for either.
+    MAX_CONTENT_LENGTH=int(os.environ.get("MAX_UPLOAD_MB", "25")) * 1024 * 1024,
 )
+
+
+def _process_image(raw):
+    """Downscale/normalise an uploaded image to keep DB storage small.
+    Returns (bytes, mimetype). Falls back to the original if PIL is absent
+    or the file can't be parsed as an image."""
+    if not _PIL:
+        return raw, "application/octet-stream"
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img = ImageOps.exif_transpose(img)        # honour phone orientation
+        img = img.convert("RGB")
+        img.thumbnail((PHOTO_MAX_DIM, PHOTO_MAX_DIM))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=80, optimize=True)
+        return out.getvalue(), "image/jpeg"
+    except Exception:                              # noqa: BLE001 - not an image
+        return None, None
 
 
 # ---------------- CSRF protection ----------------
@@ -544,6 +572,69 @@ def api_set_note(fid, sn):
     db.log("note", who, project_id=proj["project_id"], file_id=fid, sn=sn,
            paulos=edge["data"].get("paulos"), new_value=(note or "")[:120])
     return jsonify({"ok": True, "sn": sn, "note": (note or "").strip(), "by": who})
+
+
+# ---------------- Feeder photos ----------------
+@app.route("/api/files/<int:fid>/photos")
+@login_required
+def api_list_photos(fid):
+    if not db.get_file_meta(fid):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"photos": db.list_photos(fid)})
+
+
+@app.route("/api/files/<int:fid>/edge/<int:sn>/photos", methods=["POST"])
+@login_required
+def api_add_photo(fid, sn):
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    edge = _edge_by_sn(proj["data"], sn)
+    if edge is None:
+        return jsonify({"error": f"No feeder with SN {sn}"}), 404
+    if db.count_photos(fid, sn) >= MAX_PHOTOS_PER_FEEDER:
+        return jsonify({"error": f"Limit of {MAX_PHOTOS_PER_FEEDER} photos per feeder reached."}), 400
+    f = request.files.get("photo")
+    if f is None or f.filename == "":
+        return jsonify({"error": "No photo uploaded."}), 400
+
+    data, mime = _process_image(f.read())
+    if data is None:
+        return jsonify({"error": "That doesn't look like an image."}), 400
+
+    who = current_user()["username"]
+    caption = request.form.get("caption", "")
+    pid_ = db.add_photo(fid, sn, mime, data, caption, who)
+    db.log("photo_add", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+           paulos=edge["data"].get("paulos"), new_value=(caption or "")[:120])
+    return jsonify({"ok": True, "id": pid_, "sn": sn, "caption": (caption or "").strip(), "by": who})
+
+
+@app.route("/api/photos/<int:photo_id>")
+@login_required
+def api_get_photo(photo_id):
+    row = db.get_photo(photo_id)
+    if not row:
+        abort(404)
+    resp = send_file(io.BytesIO(bytes(row["data"])), mimetype=row["mimetype"],
+                     download_name=f"feeder-{row['sn']}-{photo_id}.jpg")
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
+@app.route("/api/photos/<int:photo_id>", methods=["DELETE"])
+@login_required
+def api_delete_photo(photo_id):
+    meta = db.get_photo_meta(photo_id)
+    if not meta:
+        return jsonify({"error": "No such photo"}), 404
+    # Only the uploader or an admin may delete a photo.
+    me = current_user()
+    if me["role"] != "admin" and meta["uploaded_by"] != me["username"]:
+        return jsonify({"error": "Only the uploader or an admin can delete this photo."}), 403
+    db.delete_photo(photo_id)
+    db.log("photo_delete", me["username"], file_id=meta["file_id"], sn=meta["sn"])
+    return jsonify({"ok": True})
 
 
 @app.route("/api/files/<int:fid>/state")

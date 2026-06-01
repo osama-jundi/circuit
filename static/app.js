@@ -779,6 +779,7 @@ function graphStyle() {
 
 // -------- 4. Panel details (right sidebar) --------
 let NOTES = {};          // sn -> {note, by, at} for the current file
+let PHOTOS = {};         // sn -> [{id, caption, by, at}] for the current file
 let CURRENT_NODE = null; // id of the panel shown in the details sidebar
 
 function openPanelDetails(nodeId) {
@@ -789,7 +790,9 @@ function openPanelDetails(nodeId) {
       .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))),
     fetch(`/api/files/${CURRENT_FILE}/notes`).then(r => r.ok ? r.json() : { notes: {} })
       .catch(() => ({ notes: {} })),
-  ]).then(([info, n]) => { NOTES = n.notes || {}; renderDetails(info); })
+    fetch(`/api/files/${CURRENT_FILE}/photos`).then(r => r.ok ? r.json() : { photos: {} })
+      .catch(() => ({ photos: {} })),
+  ]).then(([info, n, p]) => { NOTES = n.notes || {}; PHOTOS = p.photos || {}; renderDetails(info); })
     .catch(() => toast("Couldn't load panel details", true));
 }
 
@@ -953,15 +956,79 @@ function feederRow(edgeData, direction) {
   renderNote();
   row.appendChild(noteWrap);
 
+  // --- Site photos ---
+  const photoWrap = el("div", { className: "photo-wrap" });
+  const renderPhotos = () => {
+    photoWrap.innerHTML = "";
+    const list = PHOTOS[edgeData.sn] || [];
+    list.forEach(ph => {
+      const thumb = el("div", { className: "photo-thumb" });
+      const img = el("img", { src: `/api/photos/${ph.id}`, alt: ph.caption || "site photo",
+        loading: "lazy", title: `by ${ph.by || "?"}` });
+      img.onclick = () => openLightbox(ph.id, ph.caption);
+      const del = el("button", { className: "photo-del", textContent: "×", title: "Delete photo" });
+      del.onclick = () => {
+        apiJson(`/api/photos/${ph.id}`, "DELETE")
+          .then(() => {
+            PHOTOS[edgeData.sn] = (PHOTOS[edgeData.sn] || []).filter(x => x.id !== ph.id);
+            renderPhotos(); toast("Photo deleted");
+          }).catch(err => toast(err, true));
+      };
+      thumb.appendChild(img); thumb.appendChild(del);
+      photoWrap.appendChild(thumb);
+    });
+    if (list.length < 6) {
+      const add = el("label", { className: "photo-add", title: "Add a site photo" });
+      add.appendChild(document.createTextNode("📷"));
+      const inp = el("input", { type: "file", accept: "image/*" });
+      inp.setAttribute("capture", "environment");   // prefer the rear camera on phones
+      inp.style.display = "none";
+      inp.onchange = () => {
+        const f = inp.files && inp.files[0];
+        if (!f) return;
+        const fd = new FormData(); fd.append("photo", f);
+        toast("Uploading photo…");
+        fetch(`/api/files/${CURRENT_FILE}/edge/${edgeData.sn}/photos`,
+              { method: "POST", body: fd, headers: { "X-CSRFToken": CSRF } })
+          .then(r => r.json().then(b => ({ ok: r.ok, b })))
+          .then(({ ok, b }) => {
+            if (!ok) { toast(b.error || "Upload failed", true); return; }
+            (PHOTOS[edgeData.sn] = PHOTOS[edgeData.sn] || []).push({ id: b.id, caption: b.caption, by: b.by });
+            renderPhotos(); toast("Photo added");
+          })
+          .catch(() => toast("Upload error", true))
+          .finally(() => { inp.value = ""; });
+      };
+      add.appendChild(inp);
+      photoWrap.appendChild(add);
+    }
+  };
+  renderPhotos();
+  row.appendChild(photoWrap);
+
   // Clicking the row (but not its controls) jumps to that connection.
   row.onclick = (ev) => {
     const t = ev.target.tagName;
-    if (t === "SELECT" || t === "BUTTON" || t === "TEXTAREA") return;
-    if (ev.target.closest(".note-wrap")) return;
+    if (t === "SELECT" || t === "BUTTON" || t === "TEXTAREA" || t === "IMG" || t === "INPUT" || t === "LABEL") return;
+    if (ev.target.closest(".note-wrap") || ev.target.closest(".photo-wrap")) return;
     highlightEdgeBySn(edgeData.sn);
   };
 
   return row;
+}
+
+/** Full-screen image viewer. */
+function openLightbox(photoId, caption) {
+  let lb = $("lightbox");
+  if (!lb) {
+    lb = el("div", { id: "lightbox" });
+    lb.onclick = () => lb.classList.remove("open");
+    document.body.appendChild(lb);
+  }
+  lb.innerHTML = "";
+  lb.appendChild(el("img", { src: `/api/photos/${photoId}` }));
+  if (caption) lb.appendChild(el("div", { className: "lb-caption", textContent: caption }));
+  lb.classList.add("open");
 }
 
 function setupDetailsClose() {
