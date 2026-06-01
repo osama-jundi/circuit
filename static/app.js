@@ -173,11 +173,13 @@ function setupUpload() {
   const emptyBtn = $("empty-upload-btn");
   if (emptyBtn && IS_ADMIN) emptyBtn.addEventListener("click", trigger);
 
-  input.addEventListener("change", () => {
+  input.addEventListener("change", async () => {
     const file = input.files && input.files[0];
     if (!file) return;
     const suggested = file.name.replace(/\.[^.]+$/, "");
-    const name = (prompt("Name this diagram:", suggested) || "").trim() || suggested;
+    const entered = await uiPrompt({ title: "Name this diagram", value: suggested });
+    if (entered === null) { input.value = ""; return; }   // cancelled
+    const name = entered.trim() || suggested;
     const form = new FormData();
     form.append("file", file);
     form.append("name", name);
@@ -269,16 +271,18 @@ function renderFileTabs() {
   });
 }
 
-function renameFile(f) {
-  const name = (prompt("Rename file:", f.name) || "").trim();
+async function renameFile(f) {
+  const name = (await uiPrompt({ title: "Rename diagram", value: f.name }) || "").trim();
   if (!name || name === f.name) return;
   apiJson(`/api/files/${f.id}`, "PATCH", { name })
     .then(() => { toast("Renamed to " + name); loadFiles(CURRENT_FILE); })
     .catch(err => toast(err, true));
 }
 
-function deleteFile(f) {
-  if (!confirm(`Delete file "${f.name}"?\nThis removes its diagram, status edits and history. This cannot be undone.`)) return;
+async function deleteFile(f) {
+  const ok = await uiConfirm({ title: `Delete diagram “${f.name}”?`, danger: true, okLabel: "Delete",
+    message: "This removes its diagram, status edits and history. This cannot be undone." });
+  if (!ok) return;
   apiJson(`/api/files/${f.id}`, "DELETE")
     .then(() => {
       toast(`Deleted "${f.name}"`);
@@ -572,16 +576,17 @@ function wireUserActions(body) {
         .catch(err => toast(err, true));
     });
     const pwBtn = tr.querySelector(".act-pw");
-    if (pwBtn) pwBtn.addEventListener("click", () => {
-      const pw = prompt(`New password for ${username}:`);
+    if (pwBtn) pwBtn.addEventListener("click", async () => {
+      const pw = await uiPrompt({ title: `New password for ${username}`, placeholder: "New password" });
       if (!pw) return;
       apiJson(`/api/users/${encodeURIComponent(username)}`, "PATCH", { password: pw })
         .then(() => toast(`Password reset for ${username}`))
         .catch(err => toast(err, true));
     });
     const delBtn = tr.querySelector(".act-del");
-    if (delBtn && !delBtn.disabled) delBtn.addEventListener("click", () => {
-      if (!confirm(`Delete user ${username}? This cannot be undone.`)) return;
+    if (delBtn && !delBtn.disabled) delBtn.addEventListener("click", async () => {
+      if (!await uiConfirm({ title: `Delete user ${username}?`, danger: true, okLabel: "Delete",
+                            message: "This cannot be undone." })) return;
       apiJson(`/api/users/${encodeURIComponent(username)}`, "DELETE")
         .then(() => { toast(`Deleted ${username}`); renderUsers(body); })
         .catch(err => toast(err, true));

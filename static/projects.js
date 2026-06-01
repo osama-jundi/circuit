@@ -121,24 +121,26 @@ function renderGrid(projects) {
   }
 }
 
-function createProject() {
-  const name = (prompt("Name the new project:") || "").trim();
+async function createProject() {
+  const name = (await uiPrompt({ title: "New project", placeholder: "Project name" }) || "").trim();
   if (!name) return;
   apiJson("/api/projects", "POST", { name })
     .then(({ id }) => { toast("Project created"); window.location = `/project/${id}`; })
     .catch(err => toast(err, true));
 }
 
-function renameProject(p) {
-  const name = (prompt("Rename project:", p.name) || "").trim();
+async function renameProject(p) {
+  const name = (await uiPrompt({ title: "Rename project", value: p.name }) || "").trim();
   if (!name || name === p.name) return;
   apiJson(`/api/projects/${p.id}`, "PATCH", { name })
     .then(() => { toast("Renamed"); loadProjects(); })
     .catch(err => toast(err, true));
 }
 
-function deleteProject(p) {
-  if (!confirm(`Delete project "${p.name}"?\nThis removes ALL its diagrams, status edits and history. This cannot be undone.`)) return;
+async function deleteProject(p) {
+  const ok = await uiConfirm({ title: `Delete project “${p.name}”?`, danger: true, okLabel: "Delete",
+    message: "This removes ALL its diagrams, status edits and history. This cannot be undone." });
+  if (!ok) return;
   apiJson(`/api/projects/${p.id}`, "DELETE")
     .then(() => { toast("Deleted"); loadProjects(); })
     .catch(err => toast(err, true));
@@ -230,15 +232,15 @@ function wireUsers(body) {
         .then(() => { toast(`${username} is now ${newRole}`); renderUsers(); }).catch(err => toast(err, true));
     };
     const pwBtn = tr.querySelector(".act-pw");
-    if (pwBtn) pwBtn.onclick = () => {
-      const pw = prompt(`New password for ${username}:`);
+    if (pwBtn) pwBtn.onclick = async () => {
+      const pw = await uiPrompt({ title: `New password for ${username}`, placeholder: "New password" });
       if (!pw) return;
       apiJson(`/api/users/${encodeURIComponent(username)}`, "PATCH", { password: pw })
         .then(() => toast(`Password reset for ${username}`)).catch(err => toast(err, true));
     };
     const delBtn = tr.querySelector(".act-del");
-    if (delBtn && !delBtn.disabled) delBtn.onclick = () => {
-      if (!confirm(`Delete user ${username}?`)) return;
+    if (delBtn && !delBtn.disabled) delBtn.onclick = async () => {
+      if (!await uiConfirm({ title: `Delete user ${username}?`, danger: true, okLabel: "Delete" })) return;
       apiJson(`/api/users/${encodeURIComponent(username)}`, "DELETE")
         .then(() => { toast(`Deleted ${username}`); renderUsers(); }).catch(err => toast(err, true));
     };
