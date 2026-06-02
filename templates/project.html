@@ -24,15 +24,17 @@
 
     /* ---- Top bar ---- */
     header {
-      background: #1e3a5f;
+      background: linear-gradient(135deg, #1e3a5f 0%, #34567f 100%);
       color: white;
       padding: 10px 18px;
       display: flex;
       align-items: center;
-      gap: 16px;
-      height: 50px;
+      gap: 14px;
+      height: 52px;
+      box-shadow: 0 2px 10px rgba(15, 30, 55, 0.22);
+      z-index: 50;
     }
-    header h1 { margin: 0; font-size: 17px; font-weight: 600; flex-shrink: 0; }
+    header h1 { margin: 0; font-size: 17px; font-weight: 600; flex-shrink: 0; letter-spacing: .2px; }
     header .stats { font-size: 12px; opacity: 0.85; flex-shrink: 0; }
     .search-wrap {
       flex: 1;
@@ -103,12 +105,14 @@
 
     /* Left sidebar with the legend */
     aside.legend {
-      width: 180px;
+      width: 184px;
       background: white;
-      border-right: 1px solid #e2e5ea;
-      padding: 14px;
+      border-right: 1px solid #e6e9ef;
+      padding: 16px 14px;
       font-size: 13px;
       flex-shrink: 0;
+      box-shadow: 1px 0 6px rgba(16, 24, 40, 0.03);
+      overflow-y: auto;
     }
     aside.legend h3 {
       margin: 0 0 8px 0;
@@ -150,8 +154,15 @@
     #cy {
       flex: 1 1 0;
       min-width: 0;
-      background: white;
       position: relative;
+      /* Subtle blueprint grid so it reads like a schematic sheet */
+      background-color: #fbfcfe;
+      background-image:
+        linear-gradient(rgba(30, 58, 95, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30, 58, 95, 0.045) 1px, transparent 1px),
+        linear-gradient(rgba(30, 58, 95, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30, 58, 95, 0.08) 1px, transparent 1px);
+      background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px;
     }
 
     /* Right side panel - details */
@@ -167,8 +178,9 @@
     aside.details.open { display: block; }
 
     .details-header {
-      padding: 14px 16px;
-      background: #f9fafc;
+      padding: 16px 16px 14px;
+      background: linear-gradient(135deg, #1e3a5f 0%, #34567f 100%);
+      color: #fff;
       border-bottom: 1px solid #e2e5ea;
       position: sticky; top: 0; z-index: 5;
     }
@@ -176,12 +188,12 @@
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.8px;
-      color: #667085;
+      color: rgba(255,255,255,0.7);
     }
     .details-header h2 {
       margin: 4px 0 0;
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 15px;
+      font-weight: 700;
       word-break: break-all;
     }
     .details-header .close {
@@ -191,12 +203,12 @@
       border: none;
       background: transparent;
       font-size: 20px;
-      color: #98a2b3;
+      color: rgba(255,255,255,0.75);
       cursor: pointer;
       padding: 2px 6px;
       line-height: 1;
     }
-    .details-header .close:hover { color: #1e3a5f; }
+    .details-header .close:hover { color: #fff; }
 
     .details-body { padding: 12px 16px 24px; }
     .details-body h3 {
@@ -209,14 +221,24 @@
     .details-body h3:first-child { margin-top: 0; }
 
     .feeder-row {
-      padding: 8px 10px;
-      border: 1px solid #e2e5ea;
-      border-radius: 5px;
-      margin-bottom: 6px;
+      padding: 9px 11px;
+      border: 1px solid #e6e9ef;
+      border-left: 3px solid #cbd2db;
+      border-radius: 7px;
+      margin-bottom: 7px;
       font-size: 12px;
-      transition: border-color 0.15s;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
     }
-    .feeder-row:hover { border-color: #1e3a5f; }
+    .feeder-row:hover {
+      border-color: #c3ccd6;
+      box-shadow: 0 4px 12px rgba(16, 24, 40, 0.10);
+      transform: translateY(-1px);
+    }
+    .feeder-row.s-energized  { border-left-color: #00B050; }
+    .feeder-row.s-issued     { border-left-color: #FFC000; }
+    .feeder-row.s-notissued  { border-left-color: #A6A6A6; }
     .feeder-row .arrow { color: #667085; }
     .feeder-row .target { font-weight: 600; word-break: break-all; }
     .feeder-row .sn { font-size: 10px; color: #98a2b3; }

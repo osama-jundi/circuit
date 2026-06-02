@@ -721,16 +721,16 @@ function graphStyle() {
     {
       selector: "node[isBoard = 1]",
       style: {
-        "shape": "rectangle",
+        "shape": "round-rectangle",
         "background-color": "data(bg)",
         "background-opacity": 1,
-        "border-color": "#1f2d3a",
-        "border-width": 1,
+        "border-color": "#243a52",
+        "border-width": 1.5,
         "label": "data(label)",
-        "font-size": "10px",
+        "font-size": "11px",
         "font-weight": "bold",
         "text-valign": "bottom",
-        "text-margin-y": 4,
+        "text-margin-y": 5,
         "text-halign": "center",
         "color": "#10202e",
         "width": "data(barW)",
@@ -749,15 +749,26 @@ function graphStyle() {
         "border-color": "data(loadBorder)",
         "border-width": 2,
         "label": "data(label)",
-        "font-size": "10px",
+        "font-size": "11px",
+        "font-weight": "600",
         "text-wrap": "wrap",
-        "text-max-width": "96px",
+        "text-max-width": "92px",
         "text-valign": "center",
         "text-halign": "center",
-        "color": "#1c2b38",
+        "color": "#15212e",
         "width": "104px",
         "height": "62px",
       }
+    },
+    // ---- Selected / highlighted node gets a clear ring ----
+    {
+      selector: "node.highlighted",
+      style: { "border-color": "#1e3a5f", "border-width": 3 }
+    },
+    // ---- Highlighted feeder/cable stands out ----
+    {
+      selector: "edge.highlighted",
+      style: { "width": 4, "line-color": "#1e3a5f", "target-arrow-color": "#1e3a5f", "z-index": 9999 }
     },
     // ---- Section groups: invisible (we color the rail itself) ----
     {
@@ -919,7 +930,9 @@ function feederRow(edgeData, direction) {
   const otherPanel = direction === "from" ? edgeData.source : edgeData.target;
   const label      = direction === "from" ? "← " : "→ ";
 
-  const row = el("div", {className: "feeder-row"});
+  const statusClass = (st) =>
+    "feeder-row " + ({ "Energized": "s-energized", "Issued": "s-issued", "Not Issued": "s-notissued" }[st] || "");
+  const row = el("div", {className: statusClass(edgeData.status)});
   row.appendChild(el("div", {}, [
     el("span", {className: "arrow", textContent: label}),
     el("span", {className: "target", textContent: otherPanel}),
@@ -945,6 +958,7 @@ function feederRow(edgeData, direction) {
       if (ok) {
         dot.style.background = COLORS[newStatus];
         edgeData.status = newStatus;
+        row.className = statusClass(newStatus);   // keep the left accent in sync
         toast(`Updated SN ${edgeData.sn} → ${newStatus}`);
       }
     });
