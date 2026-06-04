@@ -780,8 +780,9 @@ function graphStyle() {
     {
       selector: "edge[tgtBoard = 0]",
       style: {
-        "width": 1.4,
-        "line-color": "#5b6b7b",
+        "width": 2,
+        "line-color": "#475467",
+        "line-cap": "round",
         "curve-style": "taxi",
         "taxi-direction": "upward",
         "taxi-turn": "50%",
@@ -790,20 +791,21 @@ function graphStyle() {
     },
     {
       selector: 'edge[tgtBoard = 0][status = "Not Issued"]',
-      style: { "line-style": "dashed", "line-dash-pattern": [5, 4] }
+      style: { "line-style": "dashed", "line-dash-pattern": [5, 4], "line-color": "#98a2b3" }
     },
     // ---- Inter-board cables (down) — colored by their SOURCE board ----
     {
       selector: "edge[tgtBoard = 1]",
       style: {
-        "width": 2.6,
+        "width": 3.4,
         "line-color": "data(cableColor)",
+        "line-cap": "round",
         "curve-style": "taxi",
         "taxi-direction": "downward",
         "taxi-turn": "20px",
         "target-arrow-shape": "triangle",
         "target-arrow-color": "data(cableColor)",
-        "arrow-scale": 0.8,
+        "arrow-scale": 1.1,
         "target-endpoint": "0% -50%",
       }
     },
@@ -1461,6 +1463,17 @@ function lighten(hex, t) {
   return `rgb(${m(r)},${m(g)},${m(b)})`;
 }
 
+/** Blend a #rrggbb hex toward black. t=0 keeps the color, t=1 is black.
+ *  Used to derive a strong, readable cable colour from a board's pale rail. */
+function darken(hex, t) {
+  const h = (hex || "#888888").replace("#", "");
+  const r = parseInt(h.substr(0, 2), 16),
+        g = parseInt(h.substr(2, 2), 16),
+        b = parseInt(h.substr(4, 2), 16);
+  const m = c => Math.round(c * (1 - t));
+  return `rgb(${m(r)},${m(g)},${m(b)})`;
+}
+
 function buildSections(cy) {
   // tag boards (feed others) vs leaves; color each board rail. No compound groups
   // so busbars drag freely in 2D.
@@ -1481,9 +1494,10 @@ function buildSections(cy) {
   });
 
   // ---- Color each inter-board cable by its SOURCE board's rail color ----
-  // so you can trace a cable back to the switchboard it leaves from.
+  // so you can trace a cable back to the switchboard it leaves from. We darken
+  // the board's pale rail colour so the cable reads clearly against the canvas.
   cy.edges("[tgtBoard = 1]").forEach(e => {
-    e.data("cableColor", e.source().data("bg") || "#7c8a99");
+    e.data("cableColor", darken(e.source().data("bg") || "#7c8a99", 0.5));
   });
 }
 

@@ -155,14 +155,11 @@
       flex: 1 1 0;
       min-width: 0;
       position: relative;
-      /* Subtle blueprint grid so it reads like a schematic sheet */
-      background-color: #fbfcfe;
-      background-image:
-        linear-gradient(rgba(30, 58, 95, 0.045) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(30, 58, 95, 0.045) 1px, transparent 1px),
-        linear-gradient(rgba(30, 58, 95, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(30, 58, 95, 0.08) 1px, transparent 1px);
-      background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px;
+      /* A faint DOT grid reads like graph paper without competing with the
+         connecting cables (which a line grid was doing). */
+      background-color: #fcfdfe;
+      background-image: radial-gradient(circle, rgba(30, 58, 95, 0.10) 1px, transparent 1.5px);
+      background-size: 26px 26px;
     }
 
     /* Right side panel - details */
