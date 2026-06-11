@@ -413,8 +413,170 @@ function setupModals() {
   const dBtn = $("dashboard-btn");
   if (dBtn) dBtn.addEventListener("click",
     () => openModal("Energization progress", renderDashboard));
+  const sBtn = $("snags-btn");
+  if (sBtn) sBtn.addEventListener("click",
+    () => { if (!CURRENT_FILE) { toast("Open a diagram first", true); return; }
+            loadCommissioning().then(() => openModal("Punch list / snags", renderSnagsList)); });
   const acc = $("account-link");
   if (acc) acc.addEventListener("click", () => openModal("My account", renderAccount));
+}
+
+// ============================================================
+//  FEEDER CARD — tabbed: Details / Workflow / Tests / Snags
+// ============================================================
+function openFeederCard(edgeData, tab) {
+  const sn = edgeData.sn;
+  openModal(`Feeder SN ${sn} · ${edgeData.paulos || ""}`, (body) => {
+    const active = tab || "details";
+    const counts = {
+      workflow: Object.keys((WORKFLOW.done || {})[String(sn)] || {}).length,
+      tests: ((TESTS.tests || {})[String(sn)] || []).length,
+      snags: SNAGS.filter(s => s.sn === sn && s.status === "open").length,
+    };
+    body.innerHTML = `
+      <div class="fc-meta">
+        <span><b>From</b> ${escapeHtml(edgeData.source)}</span>
+        <span><b>To</b> ${escapeHtml(edgeData.target)}</span>
+        <span><b>Status</b> ${escapeHtml(edgeData.status)}</span>
+      </div>
+      <div class="fc-tabs">
+        <button class="fc-tab" data-t="details">Details</button>
+        <button class="fc-tab" data-t="workflow">Workflow <span class="n">${counts.workflow}/${(WORKFLOW.milestones||[]).length||6}</span></button>
+        <button class="fc-tab" data-t="tests">Tests <span class="n">${counts.tests}</span></button>
+        <button class="fc-tab" data-t="snags">Snags <span class="n">${counts.snags}</span></button>
+      </div>
+      <div id="fc-body"></div>`;
+    const renderers = {
+      details: fcDetails, workflow: fcWorkflow, tests: fcTests, snags: fcSnags,
+    };
+    const select = (t) => {
+      body.querySelectorAll(".fc-tab").forEach(b => b.classList.toggle("active", b.dataset.t === t));
+      renderers[t](edgeData, $("fc-body"), () => openFeederCard(edgeData, t));
+    };
+    body.querySelectorAll(".fc-tab").forEach(b => b.onclick = () => select(b.dataset.t));
+    select(active);
+  });
+}
+
+/** Details tab: SN, Paulos, status + every extra column from the spreadsheet. */
+function fcDetails(edgeData, host) {
+  const rows = [
+    ["SN", edgeData.sn], ["Paulos", edgeData.paulos],
+    ["Fed from", edgeData.source], ["Feeds to", edgeData.target],
+    ["Status", edgeData.status],
+  ];
+  const extra = edgeData.extra || {};
+  Object.keys(extra).forEach(k => { if (extra[k] !== "" && extra[k] != null) rows.push([k, extra[k]]); });
+  host.innerHTML = `<table class="kv"><tbody>${
+    rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("")
+  }</tbody></table>`;
+  if (Object.keys(extra).length === 0) {
+    host.insertAdjacentHTML("beforeend",
+      '<p class="modal-empty">Tip: add columns (Cable Size, Breaker, Length…) to your spreadsheet and they\'ll all show here.</p>');
+  }
+}
+
+/** Workflow tab: the commissioning checklist with who/when. */
+function fcWorkflow(edgeData, host, refresh) {
+  const sn = edgeData.sn, done = (WORKFLOW.done || {})[String(sn)] || {};
+  const ms = WORKFLOW.milestones || [];
+  const pct = ms.length ? Math.round(Object.keys(done).length / ms.length * 100) : 0;
+  host.innerHTML = `<div class="wf-prog"><div style="width:${pct}%"></div></div>` +
+    ms.map(m => {
+      const d = done[m];
+      return `<div class="wf-item ${d ? "done" : ""}" data-m="${escapeHtml(m)}">
+        <span class="box">${d ? "✓" : ""}</span>
+        <span class="nm">${escapeHtml(m)}</span>
+        <span class="who">${d ? escapeHtml(d.by || "") + "<br>" + fmtTime(d.at) : "tap to mark"}</span>
+      </div>`;
+    }).join("");
+  host.querySelectorAll(".wf-item").forEach(it => it.onclick = () => {
+    const m = it.dataset.m, nowDone = !done[m];
+    apiJson(`/api/files/${CURRENT_FILE}/edge/${sn}/milestone`, "POST", { milestone: m, done: nowDone })
+      .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  });
+}
+
+/** Tests tab: record + list Megger/continuity/etc results. */
+function fcTests(edgeData, host, refresh) {
+  const sn = edgeData.sn, list = (TESTS.tests || {})[String(sn)] || [];
+  const opts = (TESTS.types || []).map(t => `<option>${escapeHtml(t)}</option>`).join("");
+  host.innerHTML = `
+    <div class="t-form">
+      <div><label>Test</label><select id="t-type">${opts}</select></div>
+      <div><label>Reading / value</label><input id="t-val" placeholder="e.g. 250 MΩ" size="12"></div>
+      <div><label>Result</label><select id="t-res"><option>Pass</option><option>Fail</option></select></div>
+      <div><label>Note</label><input id="t-note" placeholder="optional" size="10"></div>
+      <button class="add-btn" id="t-add">Add</button>
+    </div>
+    <div id="t-list">${list.map(testRowHtml).join("") || '<p class="modal-empty">No test records yet.</p>'}</div>`;
+  $("t-add").onclick = () => {
+    apiJson(`/api/files/${CURRENT_FILE}/edge/${sn}/tests`, "POST", {
+      test_type: $("t-type").value, value: $("t-val").value,
+      result: $("t-res").value, notes: $("t-note").value,
+    }).then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  };
+  host.querySelectorAll(".x-del").forEach(b => b.onclick = () => {
+    apiJson(`/api/tests/${b.dataset.id}`, "DELETE")
+      .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  });
+}
+function testRowHtml(t) {
+  const cls = t.result === "Pass" ? "pass" : "fail";
+  return `<div class="t-row">
+    <span class="res ${cls}">${t.result.toUpperCase()}</span>
+    <div class="t-main"><strong>${escapeHtml(t.test_type)}</strong>${t.value ? " — " + escapeHtml(t.value) : ""}
+      <div class="t-sub">${escapeHtml(t.tested_by || "")} · ${fmtTime(t.tested_at)}${t.notes ? " · " + escapeHtml(t.notes) : ""}</div>
+    </div>
+    <button class="x-del" data-id="${t.id}" title="Delete">×</button>
+  </div>`;
+}
+
+/** Snags tab for a single feeder. */
+function fcSnags(edgeData, host, refresh) {
+  const sn = edgeData.sn, list = SNAGS.filter(s => s.sn === sn);
+  host.innerHTML = `
+    <div class="s-form">
+      <div style="flex:1"><label>New snag / defect</label><input id="s-desc" placeholder="e.g. Gland plate missing" style="width:100%"></div>
+      <button class="add-btn" id="s-add">Add</button>
+    </div>
+    <div id="s-list">${list.map(snagRowHtml).join("") || '<p class="modal-empty">No snags on this feeder.</p>'}</div>`;
+  $("s-add").onclick = () => {
+    const desc = $("s-desc").value.trim();
+    if (!desc) { toast("Enter a description", true); return; }
+    apiJson(`/api/files/${CURRENT_FILE}/edge/${sn}/snags`, "POST", { description: desc })
+      .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  };
+  wireSnagButtons(host, () => loadCommissioning().then(refresh));
+}
+function snagRowHtml(s) {
+  const closed = s.status === "closed";
+  return `<div class="snag-item ${closed ? "closed" : ""}">
+    <span class="snag-pill ${s.status}">${s.status.toUpperCase()}</span>
+    <div class="s-main">${escapeHtml(s.description)}
+      <div class="s-sub">SN ${s.sn} · raised by ${escapeHtml(s.created_by || "?")} · ${fmtTime(s.created_at)}</div>
+    </div>
+    <button class="s-toggle" data-id="${s.id}" data-to="${closed ? "open" : "closed"}">${closed ? "Reopen" : "Close"}</button>
+  </div>`;
+}
+function wireSnagButtons(host, refresh) {
+  host.querySelectorAll(".s-toggle").forEach(b => b.onclick = () => {
+    apiJson(`/api/snags/${b.dataset.id}`, "PATCH", { status: b.dataset.to })
+      .then(refresh).catch(err => toast(err, true));
+  });
+}
+
+/** Project-wide punch list (the ⚠ Snags header button). */
+function renderSnagsList(body) {
+  const open = SNAGS.filter(s => s.status === "open");
+  const closed = SNAGS.filter(s => s.status === "closed");
+  if (!SNAGS.length) { body.innerHTML = '<div class="modal-empty">No snags in this diagram. 🎉</div>'; return; }
+  body.innerHTML =
+    `<div class="dash-section" style="margin-top:0">Open (${open.length})</div>` +
+    (open.map(snagRowHtml).join("") || '<p class="modal-empty">None open.</p>') +
+    `<div class="dash-section">Closed (${closed.length})</div>` +
+    (closed.map(snagRowHtml).join("") || '<p class="modal-empty">None closed.</p>');
+  wireSnagButtons(body, () => loadCommissioning().then(() => renderSnagsList(body)));
 }
 
 /** Change-my-password form (any logged-in user). */
@@ -489,8 +651,32 @@ function renderDashboard(body) {
         <div class="dash-legend">${legend}</div>
       </div>
     </div>
+    <div class="dash-section">Commissioning</div>
+    <div id="dash-comm" class="modal-empty">Loading…</div>
     <div class="dash-section">By switchboard (${rows.length})</div>
     <table class="grid dash-table"><tbody>${boardRows || '<tr><td>No boards</td></tr>'}</tbody></table>`;
+
+  // Commissioning rollup (milestones / tests / snags) for this file.
+  Promise.all([
+    safeJson(`/api/files/${CURRENT_FILE}/workflow`, { milestones: [], done: {} }),
+    safeJson(`/api/files/${CURRENT_FILE}/tests`, { tests: {} }),
+    safeJson(`/api/files/${CURRENT_FILE}/snags`, { snags: [] }),
+  ]).then(([wf, t, s]) => {
+    const el2 = $("dash-comm");
+    if (!el2) return;
+    const mDone = Object.values(wf.done || {}).reduce((a, o) => a + Object.keys(o).length, 0);
+    const mTotal = total * ((wf.milestones || []).length || 6);
+    let passed = 0, tt = 0;
+    Object.values(t.tests || {}).forEach(arr => arr.forEach(x => { tt++; if (x.result === "Pass") passed++; }));
+    const openSnags = (s.snags || []).filter(x => x.status === "open").length;
+    el2.classList.remove("modal-empty");
+    el2.innerHTML =
+      `<div style="display:flex;gap:10px;flex-wrap:wrap">
+        <span class="dash-key"><i style="background:#1e3a5f"></i>Milestones: <b>${mDone}/${mTotal}</b></span>
+        <span class="dash-key"><i style="background:#00B050"></i>Tests passed: <b>${passed}/${tt}</b></span>
+        <span class="dash-key"><i style="background:#d92d20"></i>Open snags: <b>${openSnags}</b></span>
+      </div>`;
+  });
 }
 
 function fmtTime(iso) {
@@ -826,7 +1012,22 @@ function graphStyle() {
 // -------- 4. Panel details (right sidebar) --------
 let NOTES = {};          // sn -> {note, by, at} for the current file
 let PHOTOS = {};         // sn -> [{id, caption, by, at}] for the current file
+let WORKFLOW = { milestones: [], done: {} };  // commissioning checklist state
+let TESTS = { types: [], tests: {} };         // test records per sn
+let SNAGS = [];                               // punch list for the current file
 let CURRENT_NODE = null; // id of the panel shown in the details sidebar
+
+const safeJson = (url, fallback) =>
+  fetch(url).then(r => r.ok ? r.json() : fallback).catch(() => fallback);
+
+/** Refresh the commissioning data (workflow/tests/snags) for this file. */
+function loadCommissioning() {
+  return Promise.all([
+    safeJson(`/api/files/${CURRENT_FILE}/workflow`, { milestones: [], done: {} }),
+    safeJson(`/api/files/${CURRENT_FILE}/tests`, { types: [], tests: {} }),
+    safeJson(`/api/files/${CURRENT_FILE}/snags`, { snags: [] }),
+  ]).then(([wf, t, s]) => { WORKFLOW = wf; TESTS = t; SNAGS = s.snags || []; });
+}
 
 function openPanelDetails(nodeId) {
   CURRENT_NODE = nodeId;
@@ -834,10 +1035,9 @@ function openPanelDetails(nodeId) {
   Promise.all([
     fetch(`/api/files/${CURRENT_FILE}/node/` + encodeURIComponent(nodeId))
       .then(r => r.ok ? r.json() : Promise.reject(new Error(r.status))),
-    fetch(`/api/files/${CURRENT_FILE}/notes`).then(r => r.ok ? r.json() : { notes: {} })
-      .catch(() => ({ notes: {} })),
-    fetch(`/api/files/${CURRENT_FILE}/photos`).then(r => r.ok ? r.json() : { photos: {} })
-      .catch(() => ({ photos: {} })),
+    safeJson(`/api/files/${CURRENT_FILE}/notes`, { notes: {} }),
+    safeJson(`/api/files/${CURRENT_FILE}/photos`, { photos: {} }),
+    loadCommissioning(),
   ]).then(([info, n, p]) => { NOTES = n.notes || {}; PHOTOS = p.photos || {}; renderDetails(info); })
     .catch(() => toast("Couldn't load panel details", true));
 }
@@ -969,6 +1169,25 @@ function feederRow(edgeData, direction) {
   statusRow.appendChild(sel);
   row.appendChild(statusRow);
 
+  // Commissioning chips: workflow progress, tests, snags -> open the feeder card
+  const chips = el("div", { className: "chip-row" });
+  const key = String(edgeData.sn);
+  const doneN = Object.keys((WORKFLOW.done || {})[key] || {}).length;
+  const totalM = (WORKFLOW.milestones || []).length || 6;
+  const testsN = ((TESTS.tests || {})[key] || []).length;
+  const openSnags = SNAGS.filter(s => s.sn === edgeData.sn && s.status === "open").length;
+
+  const chip = (label, cls, tab) => {
+    const c = el("span", { className: "chip" + (cls ? " " + cls : ""), textContent: label });
+    c.onclick = () => openFeederCard(edgeData, tab);
+    return c;
+  };
+  chips.appendChild(chip(`⚙ ${doneN}/${totalM}`, doneN === totalM ? "good" : "", "workflow"));
+  chips.appendChild(chip(`🧪 ${testsN}`, "", "tests"));
+  chips.appendChild(chip(openSnags ? `⚠ ${openSnags} open` : "⚠ 0", openSnags ? "warn" : "", "snags"));
+  chips.appendChild(chip("ℹ Details", "", "details"));
+  row.appendChild(chips);
+
   // Note: show existing note or an "add note" affordance; editable inline.
   const noteWrap = el("div", { className: "note-wrap" });
   const renderNote = () => {
@@ -1059,7 +1278,8 @@ function feederRow(edgeData, direction) {
   row.onclick = (ev) => {
     const t = ev.target.tagName;
     if (t === "SELECT" || t === "BUTTON" || t === "TEXTAREA" || t === "IMG" || t === "INPUT" || t === "LABEL") return;
-    if (ev.target.closest(".note-wrap") || ev.target.closest(".photo-wrap")) return;
+    if (ev.target.closest(".note-wrap") || ev.target.closest(".photo-wrap")
+        || ev.target.closest(".chip-row")) return;
     highlightEdgeBySn(edgeData.sn);
   };
 

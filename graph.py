@@ -25,7 +25,11 @@ REQUIRED_COLS = ["SN", "Fed From", "Feed To", "Paulos", "Site status"]
 
 def load_feeders(xlsx_path: str, sheet: str = "Energization") -> pd.DataFrame:
     """Read & clean the Energization sheet. Raises a clear error
-    if the file doesn't have the right columns."""
+    if the file doesn't have the right columns.
+
+    Every column beyond the required five is KEPT and surfaced per feeder in
+    the UI (cable size, breaker rating, length, ...), so richer spreadsheets
+    just work without any configuration."""
     df = pd.read_excel(xlsx_path, sheet_name=sheet)
 
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -35,7 +39,9 @@ def load_feeders(xlsx_path: str, sheet: str = "Energization") -> pd.DataFrame:
             f"Found columns: {list(df.columns)}"
         )
 
-    df = df[REQUIRED_COLS].dropna(subset=["Fed From", "Feed To"]).reset_index(drop=True)
+    extra_cols = [c for c in df.columns
+                  if c not in REQUIRED_COLS and not str(c).startswith("Unnamed:")]
+    df = df[REQUIRED_COLS + extra_cols].dropna(subset=["Fed From", "Feed To"]).reset_index(drop=True)
     df["Fed From"] = df["Fed From"].astype(str).str.strip()
     df["Feed To"]  = df["Feed To"].astype(str).str.strip()
     df["Paulos"]   = df["Paulos"].astype(str).str.strip()
@@ -47,8 +53,22 @@ def load_feeders(xlsx_path: str, sheet: str = "Energization") -> pd.DataFrame:
     return df
 
 
+def _clean_extra(v):
+    """Make a cell value JSON-safe for the frontend ('' for blanks)."""
+    if pd.isna(v):
+        return ""
+    if hasattr(v, "item"):          # numpy int64/float64 -> python int/float
+        v = v.item()
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, (int, float)):
+        return v
+    return str(v).strip()
+
+
 def build_graph(df: pd.DataFrame) -> nx.MultiDiGraph:
     G = nx.MultiDiGraph()
+    extra_cols = [c for c in df.columns if c not in REQUIRED_COLS]
     for p in set(df["Fed From"]) | set(df["Feed To"]):
         G.add_node(p)
     for _, row in df.iterrows():
@@ -57,6 +77,7 @@ def build_graph(df: pd.DataFrame) -> nx.MultiDiGraph:
             sn=int(row["SN"]),
             paulos=row["Paulos"],
             status=row["Site status"],
+            extra={c: _clean_extra(row[c]) for c in extra_cols},
         )
     return G
 
@@ -130,6 +151,8 @@ def graph_to_cytoscape(G: nx.MultiDiGraph, levels: dict[str, int]) -> dict:
                 "paulos": edata["paulos"],
                 "status": status,
                 "color":  STATUS_COLORS.get(status, "#999999"),
+                # Any additional spreadsheet columns, shown in the feeder card
+                "extra":  edata.get("extra", {}),
             }
         })
 

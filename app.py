@@ -21,7 +21,7 @@ import os
 import json
 import time
 import secrets
-from datetime import timedelta
+from datetime import timedelta, datetime
 from functools import wraps
 
 try:
@@ -47,6 +47,15 @@ except ImportError:                # photos still work, just stored as-is
 SHEET_NAME = "Energization"
 MAX_PHOTOS_PER_FEEDER = 6
 PHOTO_MAX_DIM = 1400               # downscale longest side to this many px
+
+# Commissioning workflow stages, in site order. Each feeder gets this
+# checklist; every tick records who and when.
+MILESTONES = ["Cable Pulled", "Glanded", "Terminated",
+              "Tested", "Energized", "Commissioned"]
+
+# Test record types offered in the Tests tab (free 'Other' allowed too).
+TEST_TYPES = ["Insulation Resistance (Megger)", "Continuity",
+              "Earth / Ground", "Phase Rotation", "Other"]
 
 app = Flask(__name__)
 
@@ -635,6 +644,179 @@ def api_delete_photo(photo_id):
     db.delete_photo(photo_id)
     db.log("photo_delete", me["username"], file_id=meta["file_id"], sn=meta["sn"])
     return jsonify({"ok": True})
+
+
+# ---------------- Commissioning workflow (milestones) ----------------
+@app.route("/api/files/<int:fid>/workflow")
+@login_required
+def api_workflow(fid):
+    if not db.get_file_meta(fid):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"milestones": MILESTONES, "done": db.get_milestones(fid)})
+
+
+@app.route("/api/files/<int:fid>/edge/<int:sn>/milestone", methods=["POST"])
+@login_required
+def api_set_milestone(fid, sn):
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    edge = _edge_by_sn(proj["data"], sn)
+    if edge is None:
+        return jsonify({"error": f"No feeder with SN {sn}"}), 404
+    body = request.get_json(silent=True) or {}
+    milestone = body.get("milestone")
+    done = bool(body.get("done"))
+    if milestone not in MILESTONES:
+        return jsonify({"error": f"Invalid milestone. Must be one of: {MILESTONES}"}), 400
+
+    who = current_user()["username"]
+    db.set_milestone(fid, sn, milestone, done, who)
+    db.log("milestone", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+           paulos=edge["data"].get("paulos"),
+           old_value=("" if done else milestone), new_value=(milestone if done else ""))
+    return jsonify({"ok": True, "sn": sn, "milestone": milestone, "done": done, "by": who})
+
+
+# ---------------- Test records ----------------
+@app.route("/api/files/<int:fid>/tests")
+@login_required
+def api_tests(fid):
+    if not db.get_file_meta(fid):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"types": TEST_TYPES, "tests": db.get_tests(fid)})
+
+
+@app.route("/api/files/<int:fid>/edge/<int:sn>/tests", methods=["POST"])
+@login_required
+def api_add_test(fid, sn):
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    edge = _edge_by_sn(proj["data"], sn)
+    if edge is None:
+        return jsonify({"error": f"No feeder with SN {sn}"}), 404
+    body = request.get_json(silent=True) or {}
+    test_type = (body.get("test_type") or "").strip()
+    result = body.get("result")
+    if not test_type:
+        return jsonify({"error": "Test type is required."}), 400
+    if result not in ("Pass", "Fail"):
+        return jsonify({"error": "Result must be Pass or Fail."}), 400
+
+    who = current_user()["username"]
+    tid = db.add_test(fid, sn, test_type, body.get("value"), result, body.get("notes"), who)
+    db.log("test", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+           paulos=edge["data"].get("paulos"), source=test_type,
+           new_value=f"{result}" + (f" ({body.get('value')})" if body.get("value") else ""))
+    return jsonify({"ok": True, "id": tid, "sn": sn})
+
+
+@app.route("/api/tests/<int:test_id>", methods=["DELETE"])
+@login_required
+def api_delete_test(test_id):
+    meta = db.get_test_meta(test_id)
+    if not meta:
+        return jsonify({"error": "No such test"}), 404
+    me = current_user()
+    if me["role"] != "admin" and meta["tested_by"] != me["username"]:
+        return jsonify({"error": "Only the tester or an admin can delete this record."}), 403
+    db.delete_test(test_id)
+    db.log("test_delete", me["username"], file_id=meta["file_id"], sn=meta["sn"])
+    return jsonify({"ok": True})
+
+
+# ---------------- Punch list / snags ----------------
+@app.route("/api/files/<int:fid>/snags")
+@login_required
+def api_snags(fid):
+    if not db.get_file_meta(fid):
+        return jsonify({"error": "No such file"}), 404
+    return jsonify({"snags": [dict(r) for r in db.get_snags(fid)]})
+
+
+@app.route("/api/files/<int:fid>/edge/<int:sn>/snags", methods=["POST"])
+@login_required
+def api_add_snag(fid, sn):
+    proj = _file(fid)
+    if proj is None:
+        return jsonify({"error": "No such file"}), 404
+    edge = _edge_by_sn(proj["data"], sn)
+    if edge is None:
+        return jsonify({"error": f"No feeder with SN {sn}"}), 404
+    body = request.get_json(silent=True) or {}
+    who = current_user()["username"]
+    try:
+        sid = db.add_snag(fid, sn, body.get("description"), who)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    db.log("snag_open", who, project_id=proj["project_id"], file_id=fid, sn=sn,
+           paulos=edge["data"].get("paulos"), new_value=(body.get("description") or "")[:120])
+    return jsonify({"ok": True, "id": sid, "sn": sn})
+
+
+@app.route("/api/snags/<int:snag_id>", methods=["PATCH"])
+@login_required
+def api_update_snag(snag_id):
+    snag = db.get_snag(snag_id)
+    if not snag:
+        return jsonify({"error": "No such snag"}), 404
+    status = (request.get_json(silent=True) or {}).get("status")
+    if status not in ("open", "closed"):
+        return jsonify({"error": "Status must be open or closed."}), 400
+    who = current_user()["username"]
+    db.set_snag_status(snag_id, status, who)
+    db.log("snag_" + ("close" if status == "closed" else "reopen"), who,
+           file_id=snag["file_id"], sn=snag["sn"],
+           new_value=snag["description"][:120])
+    return jsonify({"ok": True, "status": status})
+
+
+# ---------------- Printable progress report ----------------
+@app.route("/project/<int:pid>/report")
+@login_required
+def project_report(pid):
+    proj = db.get_project(pid)
+    if not proj:
+        return redirect(url_for("projects_page"))
+
+    files_data = []
+    total = {s: 0 for s in graph_module.VALID_STATUSES}
+    total["feeders"] = 0
+    open_snags = []
+    for f in db.list_files(pid):
+        fid = f["id"]
+        summ = json.loads(f["summary"]) if f["summary"] else {}
+        boards = []
+        cached = _file(fid)
+        if cached:
+            per_board = {}
+            for e in cached["data"]["cytoscape"]["edges"]:
+                d = e["data"]
+                b = per_board.setdefault(d["source"], {s: 0 for s in graph_module.VALID_STATUSES})
+                b[d["status"]] = b.get(d["status"], 0) + 1
+            boards = [{"name": k, **v, "total": sum(v.values())}
+                      for k, v in sorted(per_board.items())]
+        for s in graph_module.VALID_STATUSES:
+            total[s] += summ.get(s, 0)
+        total["feeders"] += summ.get("total", 0)
+        for sn in db.get_snags(fid):
+            if sn["status"] == "open":
+                open_snags.append({**dict(sn), "file": f["name"]})
+        files_data.append({
+            "name": f["name"], "summary": summ, "boards": boards,
+            "milestones": db.milestone_counts(fid),
+            "tests": db.test_counts(fid),
+            "snags": db.snag_counts(fid),
+        })
+
+    pct = round(total["Energized"] / total["feeders"] * 100) if total["feeders"] else 0
+    db.log("report", current_user()["username"], project_id=pid)
+    return render_template("report.html", project=dict(proj), files=files_data,
+                           total=total, pct=pct, open_snags=open_snags,
+                           milestones=MILESTONES, colors=graph_module.STATUS_COLORS,
+                           statuses=graph_module.VALID_STATUSES,
+                           user=current_user(), now=datetime.now())
 
 
 @app.route("/api/files/<int:fid>/state")

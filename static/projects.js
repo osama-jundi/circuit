@@ -100,8 +100,12 @@ function renderGrid(projects) {
     card.appendChild(el("span", { className: "files",
       textContent: `${fc} ${fc === 1 ? "diagram" : "diagrams"}` }));
     card.appendChild(progressBar(p.progress || {}));
-    card.appendChild(el("div", { className: "meta",
-      textContent: `Created by ${p.created_by || "?"} · ${fmtTime(p.created_at)}` }));
+    const foot = el("div", { className: "meta" });
+    foot.appendChild(el("span", { textContent: `By ${p.created_by || "?"} · ${fmtTime(p.created_at)}` }));
+    const rep = el("a", { className: "act card-report", href: `/project/${p.id}/report`,
+      target: "_blank", textContent: "📄 Report", title: "Printable progress report" });
+    foot.appendChild(rep);
+    card.appendChild(foot);
     if (CAN_MANAGE) {
       const acts = el("div", { className: "acts" });
       const ren = el("span", { className: "act", textContent: "✎", title: "Rename project" });

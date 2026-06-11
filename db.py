@@ -177,6 +177,45 @@ def _ddl_feeder_notes():
     )"""
 
 
+def _ddl_feeder_milestones():
+    return """CREATE TABLE IF NOT EXISTS feeder_milestones (
+        file_id   INTEGER NOT NULL,
+        sn        INTEGER NOT NULL,
+        milestone TEXT NOT NULL,
+        done_by   TEXT,
+        done_at   TEXT NOT NULL,
+        PRIMARY KEY (file_id, sn, milestone)
+    )"""
+
+
+def _ddl_feeder_tests():
+    return f"""CREATE TABLE IF NOT EXISTS feeder_tests (
+        id        {_pk()},
+        file_id   INTEGER NOT NULL,
+        sn        INTEGER NOT NULL,
+        test_type TEXT NOT NULL,
+        value     TEXT,
+        result    TEXT NOT NULL,
+        notes     TEXT,
+        tested_by TEXT,
+        tested_at TEXT NOT NULL
+    )"""
+
+
+def _ddl_snags():
+    return f"""CREATE TABLE IF NOT EXISTS snags (
+        id          {_pk()},
+        file_id     INTEGER NOT NULL,
+        sn          INTEGER NOT NULL,
+        description TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'open',
+        created_by  TEXT,
+        created_at  TEXT NOT NULL,
+        closed_by   TEXT,
+        closed_at   TEXT
+    )"""
+
+
 def _ddl_feeder_photos():
     return f"""CREATE TABLE IF NOT EXISTS feeder_photos (
         id          {_pk()},
@@ -237,9 +276,13 @@ def init_db():
     # Additive column for the progress dashboard (safe on existing DBs).
     if not _column_exists("files", "summary"):
         _exec("ALTER TABLE files ADD COLUMN summary TEXT")
-    # Per-feeder notes and photos (safe to create on existing DBs).
+    # Per-feeder notes, photos and commissioning records
+    # (all safe to create on existing DBs).
     _exec(_ddl_feeder_notes())
     _exec(_ddl_feeder_photos())
+    _exec(_ddl_feeder_milestones())
+    _exec(_ddl_feeder_tests())
+    _exec(_ddl_snags())
 
     if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
@@ -452,9 +495,7 @@ def rename_project(pid, name):
 def delete_project(pid):
     fids = [r["id"] for r in _exec("SELECT id FROM files WHERE project_id = ?", (pid,), fetch="all")]
     for fid in fids:
-        _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
-        _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
-        _exec("DELETE FROM feeder_photos WHERE file_id = ?", (fid,))
+        _purge_file_records(fid)
     _exec("DELETE FROM files WHERE project_id = ?", (pid,))
     _exec("DELETE FROM audit_log WHERE project_id = ?", (pid,))
     _exec("DELETE FROM projects WHERE id = ?", (pid,))
@@ -503,10 +544,15 @@ def rename_file(fid, name):
     _exec("UPDATE files SET name = ? WHERE id = ?", (name, fid))
 
 
+def _purge_file_records(fid):
+    """Remove every per-feeder record attached to a file."""
+    for table in ("feeder_status", "feeder_notes", "feeder_photos",
+                  "feeder_milestones", "feeder_tests", "snags"):
+        _exec(f"DELETE FROM {table} WHERE file_id = ?", (fid,))
+
+
 def delete_file(fid):
-    _exec("DELETE FROM feeder_status WHERE file_id = ?", (fid,))
-    _exec("DELETE FROM feeder_notes WHERE file_id = ?", (fid,))
-    _exec("DELETE FROM feeder_photos WHERE file_id = ?", (fid,))
+    _purge_file_records(fid)
     _exec("DELETE FROM files WHERE id = ?", (fid,))
 
 
@@ -590,6 +636,112 @@ def get_photo_meta(photo_id):
 
 def delete_photo(photo_id):
     _exec("DELETE FROM feeder_photos WHERE id = ?", (photo_id,))
+
+
+# ---------------- Commissioning milestones (per file) ----------------
+def get_milestones(file_id):
+    """{sn: {milestone: {by, at}}} for a whole file."""
+    rows = _exec("SELECT sn, milestone, done_by, done_at FROM feeder_milestones"
+                 " WHERE file_id = ?", (file_id,), fetch="all")
+    out = {}
+    for r in rows:
+        out.setdefault(r["sn"], {})[r["milestone"]] = {"by": r["done_by"], "at": r["done_at"]}
+    return out
+
+
+def set_milestone(file_id, sn, milestone, done, by):
+    """Mark a milestone done (records who/when) or clear it."""
+    if not done:
+        _exec("DELETE FROM feeder_milestones WHERE file_id = ? AND sn = ? AND milestone = ?",
+              (file_id, sn, milestone))
+        return
+    _exec("INSERT INTO feeder_milestones (file_id, sn, milestone, done_by, done_at)"
+          " VALUES (?, ?, ?, ?, ?)"
+          " ON CONFLICT(file_id, sn, milestone) DO UPDATE SET"
+          " done_by = excluded.done_by, done_at = excluded.done_at",
+          (file_id, sn, milestone, by, _utcnow()))
+
+
+def milestone_counts(file_id):
+    """{milestone: n_done} across the file, for dashboard/report rollups."""
+    rows = _exec("SELECT milestone, COUNT(*) AS n FROM feeder_milestones"
+                 " WHERE file_id = ? GROUP BY milestone", (file_id,), fetch="all")
+    return {r["milestone"]: r["n"] for r in rows}
+
+
+# ---------------- Test records (per file) ----------------
+def get_tests(file_id):
+    """{sn: [test rows]} newest first."""
+    rows = _exec("SELECT id, sn, test_type, value, result, notes, tested_by, tested_at"
+                 " FROM feeder_tests WHERE file_id = ? ORDER BY id DESC", (file_id,), fetch="all")
+    out = {}
+    for r in rows:
+        out.setdefault(r["sn"], []).append(dict(r))
+    return out
+
+
+def add_test(file_id, sn, test_type, value, result, notes, by):
+    return _insert_returning_id(
+        "INSERT INTO feeder_tests (file_id, sn, test_type, value, result, notes, tested_by, tested_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (file_id, sn, test_type, (value or "").strip() or None, result,
+         (notes or "").strip() or None, by, _utcnow()))
+
+
+def get_test_meta(test_id):
+    return _exec("SELECT id, file_id, sn, tested_by FROM feeder_tests WHERE id = ?",
+                 (test_id,), fetch="one")
+
+
+def delete_test(test_id):
+    _exec("DELETE FROM feeder_tests WHERE id = ?", (test_id,))
+
+
+def test_counts(file_id):
+    row = _exec("SELECT COUNT(*) AS total,"
+                " SUM(CASE WHEN result = 'Pass' THEN 1 ELSE 0 END) AS passed"
+                " FROM feeder_tests WHERE file_id = ?", (file_id,), fetch="one")
+    return {"total": row["total"] or 0, "passed": row["passed"] or 0}
+
+
+# ---------------- Punch list / snags (per file) ----------------
+def get_snags(file_id):
+    """All snags for a file, open first then newest."""
+    return _exec("SELECT id, sn, description, status, created_by, created_at, closed_by, closed_at"
+                 " FROM snags WHERE file_id = ?"
+                 " ORDER BY CASE WHEN status = 'open' THEN 0 ELSE 1 END, id DESC",
+                 (file_id,), fetch="all")
+
+
+def add_snag(file_id, sn, description, by):
+    description = (description or "").strip()
+    if not description:
+        raise ValueError("snag description is required")
+    return _insert_returning_id(
+        "INSERT INTO snags (file_id, sn, description, status, created_by, created_at)"
+        " VALUES (?, ?, ?, 'open', ?, ?)",
+        (file_id, sn, description, by, _utcnow()))
+
+
+def get_snag(snag_id):
+    return _exec("SELECT id, file_id, sn, description, status, created_by FROM snags"
+                 " WHERE id = ?", (snag_id,), fetch="one")
+
+
+def set_snag_status(snag_id, status, by):
+    if status == "closed":
+        _exec("UPDATE snags SET status = 'closed', closed_by = ?, closed_at = ? WHERE id = ?",
+              (by, _utcnow(), snag_id))
+    else:
+        _exec("UPDATE snags SET status = 'open', closed_by = NULL, closed_at = NULL WHERE id = ?",
+              (snag_id,))
+
+
+def snag_counts(file_id):
+    row = _exec("SELECT COUNT(*) AS total,"
+                " SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_n"
+                " FROM snags WHERE file_id = ?", (file_id,), fetch="one")
+    return {"total": row["total"] or 0, "open": row["open_n"] or 0}
 
 
 # ---------------- Audit log ----------------

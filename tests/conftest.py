@@ -24,19 +24,26 @@ ROWS = [
 TOTAL_FEEDERS = len(ROWS)
 
 
-def _make_xlsx():
+def _make_xlsx(extra=False):
     wb = Workbook()
     ws = wb.active
     ws.title = "Energization"
-    ws.append(["SN", "Fed From", "Feed To", "Paulos", "Site status"])
+    header = ["SN", "Fed From", "Feed To", "Paulos", "Site status"]
+    if extra:
+        header += ["Cable Size", "Breaker"]
+    ws.append(header)
     for r in ROWS:
-        ws.append(list(r))
+        row = list(r)
+        if extra:
+            row += ["4Cx95mm2", "MCCB 250A"]
+        ws.append(row)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
 XLSX = _make_xlsx()
+XLSX_RICH = _make_xlsx(extra=True)
 
 
 @pytest.fixture

@@ -105,31 +105,32 @@
 
     /* Left sidebar with the legend */
     aside.legend {
-      width: 184px;
-      background: white;
-      border-right: 1px solid #e6e9ef;
-      padding: 16px 14px;
+      width: 192px;
+      background: linear-gradient(180deg, #16293f 0%, #1b3450 100%);
+      color: #d7e0ea;
+      border-right: 1px solid #0e1c2c;
+      padding: 18px 14px;
       font-size: 13px;
       flex-shrink: 0;
-      box-shadow: 1px 0 6px rgba(16, 24, 40, 0.03);
       overflow-y: auto;
     }
     aside.legend h3 {
-      margin: 0 0 8px 0;
-      font-size: 11px;
+      margin: 0 0 10px 0;
+      font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: #667085;
+      letter-spacing: 1px;
+      color: #7e93a9;
     }
     .legend-item {
       display: flex;
       align-items: center;
       margin-bottom: 6px;
       cursor: pointer;
-      padding: 3px 4px;
-      border-radius: 3px;
+      padding: 5px 7px;
+      border-radius: 6px;
+      color: #e6edf4;
     }
-    .legend-item:hover { background: #f4f6f9; }
+    .legend-item:hover { background: rgba(255,255,255,0.08); }
     .legend-swatch {
       width: 22px;
       height: 4px;
@@ -142,9 +143,9 @@
       height: 2px;
     }
     .hint {
-      color: #667085;
+      color: #8fa3b8;
       font-size: 11px;
-      line-height: 1.5;
+      line-height: 1.6;
       margin-top: 4px;
     }
 
@@ -311,6 +312,85 @@
     #lightbox.open { display: flex; }
     #lightbox img { max-width: 94vw; max-height: 84vh; border-radius: 6px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
     #lightbox .lb-caption { color: #fff; font-size: 13px; margin-top: 12px; max-width: 90vw; text-align: center; }
+
+    /* ---- Commissioning chips on each feeder row ---- */
+    .chip-row { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10.5px; font-weight: 700; cursor: pointer;
+      padding: 3px 9px; border-radius: 11px;
+      background: #eef2f7; color: #475467; border: 1px solid #e2e8f0;
+    }
+    .chip:hover { background: #e0e9f3; border-color: #b9c8da; }
+    .chip.good { background: #e8f6ee; color: #067647; border-color: #c8e9d5; }
+    .chip.warn { background: #fef0ef; color: #b42318; border-color: #f7d4d0; }
+
+    /* ---- Feeder card modal (tabs) ---- */
+    .fc-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px;
+      color: #475467; margin-bottom: 14px; }
+    .fc-meta b { color: #1c2b38; }
+    .fc-tabs { display: flex; gap: 4px; border-bottom: 2px solid #e6e9ef; margin-bottom: 14px; }
+    .fc-tab {
+      border: none; background: none; cursor: pointer; font-size: 13px; font-weight: 600;
+      color: #667085; padding: 8px 14px; border-bottom: 2px solid transparent; margin-bottom: -2px;
+    }
+    .fc-tab:hover { color: #1e3a5f; }
+    .fc-tab.active { color: #1e3a5f; border-bottom-color: #1e3a5f; }
+    .fc-tab .n { font-size: 10px; background: #eef2f7; border-radius: 8px; padding: 1px 6px; margin-left: 4px; }
+
+    .kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .kv td { padding: 7px 8px; border-bottom: 1px solid #f0f2f5; }
+    .kv td:first-child { color: #667085; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .4px; width: 40%; }
+    .kv td:last-child { font-weight: 600; word-break: break-word; }
+
+    .wf-prog { display: flex; height: 10px; border-radius: 5px; overflow: hidden;
+      background: #e6e9ee; margin-bottom: 14px; }
+    .wf-prog div { background: linear-gradient(90deg, #00B050, #2ecc71); }
+    .wf-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+      border: 1px solid #e6e9ef; border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+    .wf-item:hover { border-color: #b9c8da; background: #f8fafc; }
+    .wf-item.done { background: #f2fbf6; border-color: #c8e9d5; }
+    .wf-item .box { width: 20px; height: 20px; border-radius: 5px; border: 2px solid #b9c4d0;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      font-size: 13px; color: #fff; }
+    .wf-item.done .box { background: #00B050; border-color: #00B050; }
+    .wf-item .nm { font-size: 13px; font-weight: 600; flex: 1; }
+    .wf-item .who { font-size: 11px; color: #667085; text-align: right; }
+
+    .t-form, .s-form { display: flex; flex-wrap: wrap; gap: 7px; align-items: flex-end;
+      padding: 11px; background: #f7f9fc; border: 1px solid #e6e9ef; border-radius: 8px;
+      margin-bottom: 12px; }
+    .t-form label, .s-form label { display: block; font-size: 10px; color: #667085;
+      text-transform: uppercase; letter-spacing: .4px; margin-bottom: 3px; }
+    .t-form input, .t-form select, .s-form input {
+      padding: 7px 9px; font-size: 13px; border: 1px solid #d0d5dd; border-radius: 6px; }
+    .add-btn { padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+      border: none; border-radius: 6px; background: #1e3a5f; color: #fff; }
+    .add-btn:hover { background: #2a4d7a; }
+
+    .t-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px;
+      border: 1px solid #e6e9ef; border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+    .t-row .res { font-size: 10px; font-weight: 800; padding: 2px 9px; border-radius: 9px; flex-shrink: 0; }
+    .t-row .res.pass { background: #e8f6ee; color: #067647; }
+    .t-row .res.fail { background: #fee4e2; color: #b42318; }
+    .t-row .t-main { flex: 1; }
+    .t-row .t-sub { color: #667085; font-size: 11px; margin-top: 2px; }
+    .x-del { border: none; background: none; color: #98a2b3; cursor: pointer; font-size: 15px; }
+    .x-del:hover { color: #b42318; }
+
+    .snag-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px;
+      border: 1px solid #e6e9ef; border-left: 3px solid #d92d20; border-radius: 8px;
+      margin-bottom: 6px; font-size: 12px; }
+    .snag-item.closed { border-left-color: #00B050; opacity: .72; }
+    .snag-item .s-main { flex: 1; }
+    .snag-item .s-sub { color: #667085; font-size: 11px; margin-top: 2px; }
+    .snag-pill { font-size: 10px; font-weight: 800; padding: 2px 9px; border-radius: 9px; flex-shrink: 0; }
+    .snag-pill.open { background: #fee4e2; color: #b42318; }
+    .snag-pill.closed { background: #e8f6ee; color: #067647; }
+    .s-toggle { border: 1px solid #d0d5dd; background: #fff; border-radius: 6px;
+      font-size: 11px; font-weight: 600; cursor: pointer; padding: 4px 10px; color: #344054; }
+    .s-toggle:hover { border-color: #1e3a5f; }
 
     /* ---- Responsive: phones & tablets on site ---- */
     @media (max-width: 760px) {
@@ -617,6 +697,9 @@
   <button id="upload-btn" class="upload-btn" title="Upload an xlsx file into this project">➕ Add xlsx</button>
   {% endif %}
   <button id="dashboard-btn" class="upload-btn" title="Energization progress for this file">📊 Progress</button>
+  <button id="snags-btn" class="upload-btn" title="Punch list for this file">⚠ Snags</button>
+  <a id="report-btn" class="upload-btn" href="{{ url_for('project_report', pid=project.id) }}"
+     target="_blank" title="Printable progress report" style="text-decoration:none">📄 Report</a>
   <button id="history-btn" class="upload-btn" title="Change history for this file">🕑 History</button>
   <div class="export-wrap">
     <button id="export-btn" class="export-btn" title="Export the diagram">⬇ Export ▾</button>

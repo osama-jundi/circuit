@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ project.name }} — Energization Progress Report</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #e9edf2; color: #1c2b38;
+      font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    .toolbar {
+      position: sticky; top: 0; background: #1e3a5f; color: #fff; z-index: 10;
+      display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+    }
+    .toolbar .grow { flex: 1; font-size: 14px; font-weight: 600; }
+    .toolbar button, .toolbar a {
+      background: rgba(255,255,255,.15); border: none; color: #fff; cursor: pointer;
+      padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      text-decoration: none;
+    }
+    .toolbar button:hover, .toolbar a:hover { background: rgba(255,255,255,.3); }
+
+    .sheet {
+      background: #fff; max-width: 900px; margin: 22px auto; padding: 36px 42px;
+      box-shadow: 0 6px 30px rgba(16,24,40,.12); border-radius: 4px;
+    }
+    .rpt-head { display: flex; justify-content: space-between; align-items: flex-end;
+      border-bottom: 3px solid #1e3a5f; padding-bottom: 14px; margin-bottom: 22px; }
+    .rpt-head h1 { margin: 0; font-size: 24px; color: #1e3a5f; }
+    .rpt-head .sub { font-size: 12px; color: #667085; margin-top: 4px; }
+    .rpt-head .meta { text-align: right; font-size: 12px; color: #475467; line-height: 1.6; }
+
+    .kpis { display: flex; gap: 14px; margin: 18px 0 26px; }
+    .kpi { flex: 1; border: 1px solid #e6e9ef; border-radius: 10px; padding: 14px 16px; }
+    .kpi .num { font-size: 26px; font-weight: 800; }
+    .kpi .lbl { font-size: 11px; color: #667085; text-transform: uppercase; letter-spacing: .5px; margin-top: 2px; }
+    .kpi.green .num { color: #00813a; }
+
+    .bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: #e6e9ee; margin: 6px 0 4px; }
+    .bar div { height: 100%; }
+    .legend { display: flex; gap: 18px; font-size: 11px; color: #475467; margin: 6px 0 0; }
+    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+    h2 { font-size: 15px; color: #1e3a5f; border-bottom: 1px solid #e6e9ef;
+         padding-bottom: 6px; margin: 30px 0 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+         color: #667085; padding: 7px 8px; border-bottom: 2px solid #e6e9ef; }
+    td { padding: 7px 8px; border-bottom: 1px solid #f0f2f5; vertical-align: top; }
+    td.num, th.num { text-align: right; }
+    .pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 9px; border-radius: 10px; }
+    .pill.open { background: #fee4e2; color: #b42318; }
+    .mini-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #e6e9ee; min-width: 120px; }
+    .mini-bar div { height: 100%; }
+    .muted { color: #98a2b3; font-style: italic; }
+    .sig { display: flex; gap: 40px; margin-top: 46px; }
+    .sig div { flex: 1; border-top: 1px solid #98a2b3; padding-top: 6px; font-size: 11px; color: #475467; }
+
+    @media print {
+      .toolbar { display: none; }
+      body { background: #fff; }
+      .sheet { box-shadow: none; margin: 0; max-width: none; padding: 10mm 8mm; }
+      @page { size: A4; margin: 10mm; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span class="grow">Energization Progress Report</span>
+  <a href="{{ url_for('project_page', pid=project.id) }}">← Back to project</a>
+  <button onclick="window.print()">🖨 Print / Save as PDF</button>
+</div>
+
+<div class="sheet">
+  <div class="rpt-head">
+    <div>
+      <h1>{{ project.name }}</h1>
+      <div class="sub">Energization &amp; Commissioning Progress Report</div>
+    </div>
+    <div class="meta">
+      Date: <strong>{{ now.strftime("%d %b %Y") }}</strong><br>
+      Prepared by: <strong>{{ user.username }}</strong><br>
+      Diagrams: <strong>{{ files|length }}</strong>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi green"><div class="num">{{ pct }}%</div><div class="lbl">Energized</div></div>
+    <div class="kpi"><div class="num">{{ total["feeders"] }}</div><div class="lbl">Total feeders</div></div>
+    {% for s in statuses %}
+    <div class="kpi"><div class="num">{{ total[s] }}</div><div class="lbl">{{ s }}</div></div>
+    {% endfor %}
+    <div class="kpi"><div class="num">{{ open_snags|length }}</div><div class="lbl">Open snags</div></div>
+  </div>
+
+  {% if total["feeders"] %}
+  <div class="bar">
+    {% for s in statuses %}
+    <div style="width: {{ (total[s] / total['feeders'] * 100)|round(2) }}%; background: {{ colors[s] }}"></div>
+    {% endfor %}
+  </div>
+  <div class="legend">
+    {% for s in statuses %}<span><i style="background: {{ colors[s] }}"></i>{{ s }}: {{ total[s] }}</span>{% endfor %}
+  </div>
+  {% endif %}
+
+  {% for f in files %}
+  <h2>{{ f.name }}</h2>
+  <table>
+    <thead><tr>
+      <th>Switchboard</th><th style="width:30%">Progress</th>
+      {% for s in statuses %}<th class="num">{{ s }}</th>{% endfor %}
+      <th class="num">Total</th>
+    </tr></thead>
+    <tbody>
+      {% for b in f.boards %}
+      <tr>
+        <td><strong>{{ b.name }}</strong></td>
+        <td><div class="mini-bar">
+          {% for s in statuses %}{% if b.total %}<div style="width: {{ (b[s] / b.total * 100)|round(2) }}%; background: {{ colors[s] }}"></div>{% endif %}{% endfor %}
+        </div></td>
+        {% for s in statuses %}<td class="num">{{ b[s] }}</td>{% endfor %}
+        <td class="num"><strong>{{ b.total }}</strong></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ 3 + statuses|length }}" class="muted">No board data.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <table style="margin-top:10px">
+    <thead><tr>
+      {% for m in milestones %}<th class="num">{{ m }}</th>{% endfor %}
+      <th class="num">Tests (pass/total)</th><th class="num">Snags (open/total)</th>
+    </tr></thead>
+    <tbody><tr>
+      {% for m in milestones %}<td class="num">{{ f.milestones.get(m, 0) }}</td>{% endfor %}
+      <td class="num">{{ f.tests.passed }}/{{ f.tests.total }}</td>
+      <td class="num">{{ f.snags.open }}/{{ f.snags.total }}</td>
+    </tr></tbody>
+  </table>
+  {% endfor %}
+
+  <h2>Open punch list ({{ open_snags|length }})</h2>
+  {% if open_snags %}
+  <table>
+    <thead><tr><th>Diagram</th><th>SN</th><th>Description</th><th>Raised by</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for s in open_snags %}
+      <tr>
+        <td>{{ s.file }}</td><td>{{ s.sn }}</td><td>{{ s.description }}</td>
+        <td>{{ s.created_by }}</td><td><span class="pill open">OPEN</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No open snags — punch list is clear.</p>
+  {% endif %}
+
+  <div class="sig">
+    <div>Prepared by (Contractor)</div>
+    <div>Reviewed by (Consultant)</div>
+    <div>Approved by (Client)</div>
+  </div>
+</div>
+
+</body>
+</html>
