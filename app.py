@@ -79,6 +79,19 @@ app.config.update(
 )
 
 
+@app.context_processor
+def inject_asset_helper():
+    """`asset('app.js')` -> a static URL with a ?v=<mtime> cache-buster, so
+    browsers always pick up new JS/CSS after a deploy."""
+    def asset(filename):
+        try:
+            v = int(os.path.getmtime(os.path.join(app.static_folder, filename)))
+        except OSError:
+            v = 0
+        return url_for("static", filename=filename) + f"?v={v}"
+    return {"asset": asset}
+
+
 def _process_image(raw):
     """Downscale/normalise an uploaded image to keep DB storage small.
     Returns (bytes, mimetype). Falls back to the original if PIL is absent
