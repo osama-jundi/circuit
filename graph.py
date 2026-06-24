@@ -10,6 +10,7 @@ web frontend needs as a Python dict (nodes, edges, levels, findings).
 
 import pandas as pd
 import networkx as nx
+import re
 
 STATUS_COLORS = {
     "Energized":  "#00B050",
@@ -66,6 +67,59 @@ def _clean_extra(v):
     return str(v).strip()
 
 
+# ---- Optional GPS: detect a coordinate column and map it to PANELS ----
+def _find_gps_columns(cols):
+    """Detect how GPS is provided. Returns ('single', col) for a combined
+    'lat, lon' column, ('pair', latcol, loncol) for separate columns, or None.
+    The system works fine when this returns None (no map view)."""
+    norm = {c: str(c).strip().lower() for c in cols}
+    latcol = next((c for c, n in norm.items() if n in ("lat", "latitude")), None)
+    loncol = next((c for c, n in norm.items()
+                   if n in ("lon", "lng", "long", "longitude")), None)
+    if latcol and loncol:
+        return ("pair", latcol, loncol)
+    for c, n in norm.items():
+        if any(h in n for h in ("gps", "coordinate", "location")):
+            return ("single", c)
+    return None
+
+
+def _parse_latlon(text):
+    """Pull (lat, lon) out of a free-form string like '25.2048, 55.2708'."""
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return None
+    nums = re.findall(r"[-+]?\d+(?:\.\d+)?", s)
+    if len(nums) < 2:
+        return None
+    lat, lon = float(nums[0]), float(nums[1])
+    if -90 <= lat <= 90 and -180 <= lon <= 180 and not (lat == 0 and lon == 0):
+        return [round(lat, 6), round(lon, 6)]
+    return None
+
+
+def extract_panel_coords(df):
+    """Return {panel_name: [lat, lon]} taken from the GPS column, attributed to
+    the row's 'Feed To' panel (the board being located). Empty if no GPS."""
+    spec = _find_gps_columns(df.columns)
+    if not spec:
+        return {}
+    coords = {}
+    for _, row in df.iterrows():
+        panel = str(row["Feed To"]).strip()
+        if panel in coords:
+            continue
+        if spec[0] == "pair":
+            ll = _parse_latlon(f"{row[spec[1]]}, {row[spec[2]]}")
+        else:
+            ll = _parse_latlon(row[spec[1]])
+        if ll:
+            coords[panel] = ll
+    return coords
+
+
 def build_graph(df: pd.DataFrame) -> nx.MultiDiGraph:
     G = nx.MultiDiGraph()
     extra_cols = [c for c in df.columns if c not in REQUIRED_COLS]
@@ -116,26 +170,29 @@ def _panel_type(name: str) -> str:
     return "OTHER"
 
 
-def graph_to_cytoscape(G: nx.MultiDiGraph, levels: dict[str, int]) -> dict:
+def graph_to_cytoscape(G: nx.MultiDiGraph, levels: dict[str, int],
+                       coords: dict | None = None) -> dict:
     """Turn our NetworkX graph into the JSON format Cytoscape.js expects.
 
     Cytoscape wants: {'nodes': [...], 'edges': [...]}
-    Each node has data (id, label, level).
+    Each node has data (id, label, level[, lat, lon]).
     Each edge has data (id, source, target, sn, paulos, status, color).
     """
+    coords = coords or {}
     nodes = []
     for n in sorted(G.nodes):
-        nodes.append({
-            "data": {
-                "id":    n,
-                "label": n,
-                "level": levels.get(n, 0),
-                "type":  _panel_type(n),
-                # How many feeders in/out - useful for the popup
-                "in_degree":  G.in_degree(n),
-                "out_degree": G.out_degree(n),
-            }
-        })
+        data = {
+            "id":    n,
+            "label": n,
+            "level": levels.get(n, 0),
+            "type":  _panel_type(n),
+            # How many feeders in/out - useful for the popup
+            "in_degree":  G.in_degree(n),
+            "out_degree": G.out_degree(n),
+        }
+        if n in coords:
+            data["lat"], data["lon"] = coords[n][0], coords[n][1]
+        nodes.append({"data": data})
 
     edges = []
     # G.edges(keys=True, data=True) gives every edge separately, even duplicates
@@ -191,13 +248,16 @@ def load_and_build(xlsx_path: str, sheet: str = "Energization") -> dict:
     df = load_feeders(xlsx_path, sheet)
     G  = build_graph(df)
     levels = assign_levels(G)
+    coords = extract_panel_coords(df)
     return {
-        "cytoscape":  graph_to_cytoscape(G, levels),
+        "cytoscape":  graph_to_cytoscape(G, levels, coords),
         "findings":   find_findings(G, df),
+        "has_gps":    bool(coords),
         "stats": {
             "panels":  G.number_of_nodes(),
             "feeders": G.number_of_edges(),
             "depth":   max(levels.values()) + 1 if levels else 0,
+            "located": len(coords),
         },
         # We hold the original DataFrame so Stage 3c can export with changes
         "_df": df,

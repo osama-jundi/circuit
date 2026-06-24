@@ -482,6 +482,7 @@ def api_graph(fid):
     return jsonify({
         "loaded": True, "name": proj["name"], "revision": db.get_revision(fid),
         "elements": data["cytoscape"], "findings": data["findings"], "stats": data["stats"],
+        "has_gps": data.get("has_gps", False),
         "statuses": graph_module.VALID_STATUSES, "colors": graph_module.STATUS_COLORS,
     })
 

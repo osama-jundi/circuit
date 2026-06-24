@@ -23,6 +23,10 @@ let CURRENT_FILE = null;      // id of the file (diagram) being viewed
 let FILE_LIST = [];           // [{id, name, ...}] cached for the file tab bar
 let lastRevision = -1;        // file revision we last rendered (for polling)
 const CSRF = document.body.dataset.csrf || "";   // CSRF token for mutating calls
+let HAS_GPS = false;          // does the current file carry GPS coordinates?
+let CURRENT_VIEW = "schematic";
+let MAP = null;               // Leaflet map instance (lazily created)
+let MAP_LAYER = null;         // layer-group holding pins + cables (rebuilt on show)
 
 const $  = (id) => document.getElementById(id);
 const el = (tag, props = {}, children = []) => {
@@ -113,6 +117,13 @@ function boot() {
     );
     window.cy = cy;
     updatePresence();           // show who's viewing right away
+
+    // Map view is available only when this file carries GPS coordinates.
+    HAS_GPS = !!data.has_gps;
+    const vt = $("view-toggle");
+    if (vt) vt.style.display = HAS_GPS ? "flex" : "none";
+    if (!HAS_GPS) showSchematic();    // make sure we're on the diagram
+    else if (CURRENT_VIEW === "map") showMap();
   })
   .catch(err => {
     $("loading").textContent = "Failed to load: " + err.message;
@@ -333,6 +344,7 @@ function pollTick() {
     if (changed) {
       renderStatusSummary(cy);
       renderTitleBlock(cy);
+      refreshMapIfActive();
       toast(`Updated — ${changed} change${changed > 1 ? "s" : ""} from others`);
     }
   }).catch(() => {});
@@ -374,8 +386,133 @@ setupUpload();
 setupTitleBlock();
 setupModals();
 setupLegendToggle();
+setupViewToggle();
 loadFiles();
 startPolling();
+
+// ============================================================
+//  MAP VIEW (geographic) — used when the file has GPS coordinates
+// ============================================================
+function setupViewToggle() {
+  const sBtn = $("view-schematic"), mBtn = $("view-map");
+  if (sBtn) sBtn.addEventListener("click", showSchematic);
+  if (mBtn) mBtn.addEventListener("click", showMap);
+}
+
+function showSchematic() {
+  CURRENT_VIEW = "schematic";
+  $("view-schematic") && $("view-schematic").classList.add("active");
+  $("view-map") && $("view-map").classList.remove("active");
+  const m = $("map"), c = $("cy");
+  if (m) m.style.display = "none";
+  if (c) c.style.display = "block";
+  if (cy) setTimeout(() => cy.resize(), 30);
+}
+
+function showMap() {
+  if (!HAS_GPS) { toast("This file has no GPS coordinates", true); return; }
+  if (typeof L === "undefined") {
+    toast("Map needs an internet connection to load", true);
+    return;
+  }
+  CURRENT_VIEW = "map";
+  $("view-map") && $("view-map").classList.add("active");
+  $("view-schematic") && $("view-schematic").classList.remove("active");
+  $("cy").style.display = "none";
+  $("map").style.display = "block";
+  buildMap();
+}
+
+/** (Re)build the Leaflet map from the current cy state (so statuses are fresh). */
+function buildMap() {
+  if (!cy) return;
+  if (!MAP) {
+    MAP = L.map("map", { zoomControl: true });
+    const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "© OpenStreetMap contributors",
+    });
+    const sat = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19, attribution: "Imagery © Esri" });
+    osm.addTo(MAP);
+    L.control.layers({ "Street map": osm, "Satellite": sat }).addTo(MAP);
+    addMapLegend();
+  }
+  MAP.invalidateSize();
+
+  // Resolve a coordinate for every panel: use its GPS, else the average of
+  // neighbours that have one (a couple of passes), else the overall centre.
+  const coord = {};
+  cy.nodes("[!isGroup]").forEach(n => {
+    const la = n.data("lat"), lo = n.data("lon");
+    if (la != null && lo != null) coord[n.id()] = [la, lo];
+  });
+  const known = Object.values(coord);
+  if (!known.length) { toast("No usable coordinates", true); return; }
+  const centre = [avg(known.map(c => c[0])), avg(known.map(c => c[1]))];
+  for (let pass = 0; pass < 3; pass++) {
+    cy.nodes("[!isGroup]").forEach(n => {
+      if (coord[n.id()]) return;
+      const near = n.neighborhood("node").map(x => coord[x.id()]).filter(Boolean);
+      if (near.length) coord[n.id()] = [avg(near.map(c => c[0])), avg(near.map(c => c[1]))];
+    });
+  }
+  cy.nodes("[!isGroup]").forEach(n => { if (!coord[n.id()]) coord[n.id()] = centre; });
+
+  // Redraw pins + cables.
+  if (MAP_LAYER) MAP_LAYER.remove();
+  MAP_LAYER = L.layerGroup().addTo(MAP);
+
+  // Cables first (under the pins), coloured by feeder status.
+  cy.edges().forEach(e => {
+    const a = coord[e.source().id()], b = coord[e.target().id()];
+    if (!a || !b) return;
+    const col = COLORS[e.data("status")] || "#888";
+    L.polyline([a, b], { color: col, weight: 3, opacity: 0.85 })
+      .bindPopup(`<b>SN ${e.data("sn")}</b> · ${escapeHtml(e.data("paulos") || "")}<br>`
+        + `${escapeHtml(e.source().id())} → ${escapeHtml(e.target().id())}<br>Status: ${escapeHtml(e.data("status"))}`)
+      .addTo(MAP_LAYER);
+  });
+
+  // Panel pins, coloured by the status of the feeder energising them.
+  cy.nodes("[!isGroup]").forEach(n => {
+    const inc = n.incomers("edge");
+    const st = inc.length ? inc[0].data("status") : null;
+    const col = (st && COLORS[st]) || "#1e3a5f";
+    const located = n.data("lat") != null;
+    const m = L.circleMarker(coord[n.id()], {
+      radius: located ? 8 : 6, color: "#11202e", weight: 1.5,
+      fillColor: col, fillOpacity: located ? 0.95 : 0.5,
+      dashArray: located ? null : "2,3",
+    });
+    m.bindTooltip(n.id(), { permanent: false, direction: "top" });
+    m.on("click", () => { showSchematicSidebarFor(n.id()); });
+    m.addTo(MAP_LAYER);
+  });
+
+  const bounds = L.latLngBounds(cy.nodes("[!isGroup]").map(n => coord[n.id()]));
+  MAP.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+}
+
+/** Clicking a map pin opens the same details sidebar as the schematic. */
+function showSchematicSidebarFor(panelId) {
+  openPanelDetails(panelId);
+}
+
+function addMapLegend() {
+  const lg = L.control({ position: "bottomright" });
+  lg.onAdd = () => {
+    const div = L.DomUtil.create("div", "map-legend");
+    div.innerHTML = "<strong>Panel / feeder status</strong><br>" +
+      STATUSES.map(s => `<span><i style="background:${COLORS[s]}"></i>${s}</span>`).join("<br>") +
+      '<br><span><i style="background:#1e3a5f"></i>Source / no feed</span>';
+    return div;
+  };
+  lg.addTo(MAP);
+}
+
+const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+function refreshMapIfActive() { if (CURRENT_VIEW === "map" && MAP) buildMap(); }
 
 /** On small screens the legend/key is a slide-in drawer toggled by a button. */
 function setupLegendToggle() {
@@ -1157,7 +1294,7 @@ function bulkSetStatus(sns, status) {
     .then(res => {
       if (typeof res.revision === "number") lastRevision = res.revision;
       sns.forEach(sn => applyStatusToCanvas(sn, status, COLORS[status]));
-      renderStatusSummary(cy); renderTitleBlock(cy);
+      renderStatusSummary(cy); renderTitleBlock(cy); refreshMapIfActive();
       toast(`Set ${res.changed} feeder${res.changed !== 1 ? "s" : ""} → ${status}`);
       if (CURRENT_NODE) openPanelDetails(CURRENT_NODE);   // refresh the panel
     })
@@ -1484,6 +1621,7 @@ function changeEdgeStatus(sn, newStatus, callback) {
     // mistake it for someone else's edit and re-toast it.
     if (typeof body.revision === "number") lastRevision = body.revision;
     applyStatusToCanvas(sn, body.status, body.color);
+    refreshMapIfActive();
     callback(true);
   })
   .catch(err => {
