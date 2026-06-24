@@ -73,6 +73,49 @@ def test_snags_open_and_close(admin):
                   json={"description": "  "}, headers=h).status_code == 400
 
 
+def test_custom_milestones(admin, appmod):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    # defaults present, no custom yet
+    wf = c.get(f"/api/files/{fid}/workflow").get_json()
+    assert wf["milestones"][:6] == ["Cable Pulled", "Glanded", "Terminated",
+                                    "Tested", "Energized", "Commissioned"]
+    assert wf["custom"] == [] and wf["can_manage"] is True
+    # admin adds a custom stage
+    mid = c.post(f"/api/projects/{pid}/milestones", json={"name": "SAT Witnessed"},
+                 headers=h).get_json()["id"]
+    wf = c.get(f"/api/files/{fid}/workflow").get_json()
+    assert wf["milestones"][-1] == "SAT Witnessed"
+    # it can be ticked on a feeder
+    assert c.post(f"/api/files/{fid}/edge/3/milestone",
+                  json={"milestone": "SAT Witnessed", "done": True}, headers=h).get_json()["ok"]
+    assert c.get(f"/api/files/{fid}/workflow").get_json()["done"]["3"]["SAT Witnessed"]["by"] == "admin"
+    # duplicate rejected
+    assert c.post(f"/api/projects/{pid}/milestones", json={"name": "sat witnessed"},
+                  headers=h).status_code == 400
+    # non-admin can't add
+    c.post("/api/users", json={"username": "bob", "password": "pw", "role": "user"}, headers=h)
+    bob = appmod.app.test_client()
+    bh = login(bob, "bob", "pw")
+    assert bob.post(f"/api/projects/{pid}/milestones", json={"name": "x"}, headers=bh).status_code == 403
+    # admin removes it -> gone from list and ticks cleared
+    assert c.delete(f"/api/milestones/{mid}", headers=h).get_json()["ok"]
+    wf = c.get(f"/api/files/{fid}/workflow").get_json()
+    assert "SAT Witnessed" not in wf["milestones"]
+    assert "3" not in wf["done"] or "SAT Witnessed" not in wf["done"].get("3", {})
+
+
+def test_custom_test_type(admin):
+    c, h = admin
+    pid, fid = make_project_with_file(c, h)
+    # a free-text custom test type is accepted and stored
+    r = c.post(f"/api/files/{fid}/edge/3/tests",
+               json={"test_type": "Polarity", "value": "OK", "result": "Pass"}, headers=h)
+    assert r.status_code == 200
+    tests = c.get(f"/api/files/{fid}/tests").get_json()["tests"]
+    assert tests["3"][0]["test_type"] == "Polarity"
+
+
 def test_report_renders(admin):
     c, h = admin
     pid, fid = _rich_file(c, h)

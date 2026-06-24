@@ -216,6 +216,15 @@ def _ddl_snags():
     )"""
 
 
+def _ddl_project_milestones():
+    return f"""CREATE TABLE IF NOT EXISTS project_milestones (
+        id         {_pk()},
+        project_id INTEGER NOT NULL,
+        name       TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )"""
+
+
 def _ddl_feeder_photos():
     return f"""CREATE TABLE IF NOT EXISTS feeder_photos (
         id          {_pk()},
@@ -283,6 +292,7 @@ def init_db():
     _exec(_ddl_feeder_milestones())
     _exec(_ddl_feeder_tests())
     _exec(_ddl_snags())
+    _exec(_ddl_project_milestones())
 
     if _exec("SELECT COUNT(*) AS n FROM users", fetch="one")["n"] == 0:
         _exec("INSERT INTO users (username, password_hash, role, must_change, created_at)"
@@ -498,7 +508,45 @@ def delete_project(pid):
         _purge_file_records(fid)
     _exec("DELETE FROM files WHERE project_id = ?", (pid,))
     _exec("DELETE FROM audit_log WHERE project_id = ?", (pid,))
+    _exec("DELETE FROM project_milestones WHERE project_id = ?", (pid,))
     _exec("DELETE FROM projects WHERE id = ?", (pid,))
+
+
+# ---------------- Custom workflow milestones (per project) ----------------
+def get_project_milestones(pid):
+    """Admin-added milestone names for a project, in insertion order."""
+    return _exec("SELECT id, name FROM project_milestones WHERE project_id = ? ORDER BY id",
+                 (pid,), fetch="all")
+
+
+def add_project_milestone(pid, name):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("milestone name is required")
+    existing = [r["name"].lower() for r in get_project_milestones(pid)]
+    if name.lower() in existing:
+        raise ValueError("that milestone already exists")
+    return _insert_returning_id(
+        "INSERT INTO project_milestones (project_id, name, created_at) VALUES (?, ?, ?)",
+        (pid, name, _utcnow()))
+
+
+def delete_project_milestone(mid):
+    row = _exec("SELECT project_id, name FROM project_milestones WHERE id = ?", (mid,), fetch="one")
+    if not row:
+        return
+    # Remove any feeder ticks recorded against this custom milestone.
+    fids = [r["id"] for r in _exec("SELECT id FROM files WHERE project_id = ?",
+                                   (row["project_id"],), fetch="all")]
+    for fid in fids:
+        _exec("DELETE FROM feeder_milestones WHERE file_id = ? AND milestone = ?",
+              (fid, row["name"]))
+    _exec("DELETE FROM project_milestones WHERE id = ?", (mid,))
+
+
+def get_milestone_meta(mid):
+    return _exec("SELECT id, project_id, name FROM project_milestones WHERE id = ?",
+                 (mid,), fetch="one")
 
 
 # ---------------- Files (diagrams within a project) ----------------

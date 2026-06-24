@@ -49,9 +49,10 @@ MAX_PHOTOS_PER_FEEDER = 6
 PHOTO_MAX_DIM = 1400               # downscale longest side to this many px
 
 # Commissioning workflow stages, in site order. Each feeder gets this
-# checklist; every tick records who and when.
-MILESTONES = ["Cable Pulled", "Glanded", "Terminated",
-              "Tested", "Energized", "Commissioned"]
+# checklist; every tick records who and when. Admins can add more per project
+# (see effective_milestones); these six are always present.
+DEFAULT_MILESTONES = ["Cable Pulled", "Glanded", "Terminated",
+                      "Tested", "Energized", "Commissioned"]
 
 # Test record types offered in the Tests tab (free 'Other' allowed too).
 TEST_TYPES = ["Insulation Resistance (Megger)", "Continuity",
@@ -660,12 +661,50 @@ def api_delete_photo(photo_id):
 
 
 # ---------------- Commissioning workflow (milestones) ----------------
+def effective_milestones(pid):
+    """The default stages plus any the admin added to this project."""
+    return DEFAULT_MILESTONES + [r["name"] for r in db.get_project_milestones(pid)]
+
+
 @app.route("/api/files/<int:fid>/workflow")
 @login_required
 def api_workflow(fid):
-    if not db.get_file_meta(fid):
+    meta = db.get_file_meta(fid)
+    if not meta:
         return jsonify({"error": "No such file"}), 404
-    return jsonify({"milestones": MILESTONES, "done": db.get_milestones(fid)})
+    custom = [dict(r) for r in db.get_project_milestones(meta["project_id"])]
+    return jsonify({
+        "milestones": DEFAULT_MILESTONES + [c["name"] for c in custom],
+        "custom": custom,                         # [{id, name}] removable by admins
+        "done": db.get_milestones(fid),
+        "can_manage": current_user()["role"] == "admin",
+    })
+
+
+@app.route("/api/projects/<int:pid>/milestones", methods=["POST"])
+@admin_required
+def api_add_project_milestone(pid):
+    if not db.project_exists(pid):
+        return jsonify({"error": "No such project"}), 404
+    try:
+        mid = db.add_project_milestone(pid, (request.get_json(silent=True) or {}).get("name", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    db.log("milestone_add", current_user()["username"], project_id=pid,
+           new_value=(request.get_json(silent=True) or {}).get("name"))
+    return jsonify({"ok": True, "id": mid})
+
+
+@app.route("/api/milestones/<int:mid>", methods=["DELETE"])
+@admin_required
+def api_delete_project_milestone(mid):
+    meta = db.get_milestone_meta(mid)
+    if not meta:
+        return jsonify({"error": "No such milestone"}), 404
+    db.delete_project_milestone(mid)
+    db.log("milestone_delete", current_user()["username"], project_id=meta["project_id"],
+           new_value=meta["name"])
+    return jsonify({"ok": True})
 
 
 @app.route("/api/files/<int:fid>/edge/<int:sn>/milestone", methods=["POST"])
@@ -680,8 +719,9 @@ def api_set_milestone(fid, sn):
     body = request.get_json(silent=True) or {}
     milestone = body.get("milestone")
     done = bool(body.get("done"))
-    if milestone not in MILESTONES:
-        return jsonify({"error": f"Invalid milestone. Must be one of: {MILESTONES}"}), 400
+    valid = effective_milestones(proj["project_id"])
+    if milestone not in valid:
+        return jsonify({"error": f"Invalid milestone. Must be one of: {valid}"}), 400
 
     who = current_user()["username"]
     db.set_milestone(fid, sn, milestone, done, who)
@@ -827,7 +867,7 @@ def project_report(pid):
     db.log("report", current_user()["username"], project_id=pid)
     return render_template("report.html", project=dict(proj), files=files_data,
                            total=total, pct=pct, open_snags=open_snags,
-                           milestones=MILESTONES, colors=graph_module.STATUS_COLORS,
+                           milestones=effective_milestones(pid), colors=graph_module.STATUS_COLORS,
                            statuses=graph_module.VALID_STATUSES,
                            user=current_user(), now=datetime.now())
 

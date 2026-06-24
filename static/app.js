@@ -480,39 +480,85 @@ function fcDetails(edgeData, host) {
 function fcWorkflow(edgeData, host, refresh) {
   const sn = edgeData.sn, done = (WORKFLOW.done || {})[String(sn)] || {};
   const ms = WORKFLOW.milestones || [];
+  const customById = {};                 // name -> custom milestone id (removable)
+  (WORKFLOW.custom || []).forEach(c => customById[c.name] = c.id);
+  const canManage = !!WORKFLOW.can_manage;
   const pct = ms.length ? Math.round(Object.keys(done).length / ms.length * 100) : 0;
+
   host.innerHTML = `<div class="wf-prog"><div style="width:${pct}%"></div></div>` +
     ms.map(m => {
       const d = done[m];
+      const delBtn = (canManage && customById[m] != null)
+        ? `<button class="x-del wf-del" data-id="${customById[m]}" title="Remove this stage">×</button>` : "";
       return `<div class="wf-item ${d ? "done" : ""}" data-m="${escapeHtml(m)}">
         <span class="box">${d ? "✓" : ""}</span>
-        <span class="nm">${escapeHtml(m)}</span>
+        <span class="nm">${escapeHtml(m)}${customById[m] != null ? ' <span class="tag-custom">custom</span>' : ""}</span>
         <span class="who">${d ? escapeHtml(d.by || "") + "<br>" + fmtTime(d.at) : "tap to mark"}</span>
+        ${delBtn}
       </div>`;
-    }).join("");
-  host.querySelectorAll(".wf-item").forEach(it => it.onclick = () => {
+    }).join("") +
+    (canManage ? `<button class="add-btn" id="wf-add" style="margin-top:10px">+ Add stage</button>` : "");
+
+  host.querySelectorAll(".wf-item").forEach(it => it.onclick = (ev) => {
+    if (ev.target.classList.contains("wf-del")) return;   // delete handled below
     const m = it.dataset.m, nowDone = !done[m];
     apiJson(`/api/files/${CURRENT_FILE}/edge/${sn}/milestone`, "POST", { milestone: m, done: nowDone })
       .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
   });
+  host.querySelectorAll(".wf-del").forEach(b => b.onclick = async () => {
+    if (!await uiConfirm({ title: "Remove this stage?", danger: true, okLabel: "Remove",
+      message: "It will be removed from every feeder in this project, with its ticks." })) return;
+    apiJson(`/api/milestones/${b.dataset.id}`, "DELETE")
+      .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  });
+  const addBtn = $("wf-add");
+  if (addBtn) addBtn.onclick = async () => {
+    const name = (await uiPrompt({ title: "New workflow stage",
+      placeholder: "e.g. SAT Witnessed" }) || "").trim();
+    if (!name) return;
+    apiJson(`/api/projects/${PROJECT_ID}/milestones`, "POST", { name })
+      .then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
+  };
 }
 
 /** Tests tab: record + list Megger/continuity/etc results. */
 function fcTests(edgeData, host, refresh) {
   const sn = edgeData.sn, list = (TESTS.tests || {})[String(sn)] || [];
-  const opts = (TESTS.types || []).map(t => `<option>${escapeHtml(t)}</option>`).join("");
+  // Build the type list: built-in types + any custom types already used in
+  // this file, then an "Other…" entry that reveals a free-text field.
+  const builtin = (TESTS.types || []).filter(t => t !== "Other");
+  const used = new Set();
+  Object.values(TESTS.tests || {}).forEach(arr => arr.forEach(x => {
+    if (x.test_type && !builtin.includes(x.test_type)) used.add(x.test_type);
+  }));
+  const all = [...builtin, ...used];
+  const opts = all.map(t => `<option>${escapeHtml(t)}</option>`).join("")
+    + `<option value="__other__">Other… (type your own)</option>`;
+
   host.innerHTML = `
     <div class="t-form">
       <div><label>Test</label><select id="t-type">${opts}</select></div>
+      <div id="t-other-wrap" style="display:none"><label>New test name</label><input id="t-other" placeholder="e.g. Polarity" size="14"></div>
       <div><label>Reading / value</label><input id="t-val" placeholder="e.g. 250 MΩ" size="12"></div>
       <div><label>Result</label><select id="t-res"><option>Pass</option><option>Fail</option></select></div>
       <div><label>Note</label><input id="t-note" placeholder="optional" size="10"></div>
       <button class="add-btn" id="t-add">Add</button>
     </div>
     <div id="t-list">${list.map(testRowHtml).join("") || '<p class="modal-empty">No test records yet.</p>'}</div>`;
+
+  const typeSel = $("t-type"), otherWrap = $("t-other-wrap");
+  typeSel.onchange = () => {
+    otherWrap.style.display = typeSel.value === "__other__" ? "block" : "none";
+    if (typeSel.value === "__other__") $("t-other").focus();
+  };
   $("t-add").onclick = () => {
+    let type = typeSel.value;
+    if (type === "__other__") {
+      type = $("t-other").value.trim();
+      if (!type) { toast("Type the new test name", true); return; }
+    }
     apiJson(`/api/files/${CURRENT_FILE}/edge/${sn}/tests`, "POST", {
-      test_type: $("t-type").value, value: $("t-val").value,
+      test_type: type, value: $("t-val").value,
       result: $("t-res").value, notes: $("t-note").value,
     }).then(() => loadCommissioning().then(refresh)).catch(err => toast(err, true));
   };
